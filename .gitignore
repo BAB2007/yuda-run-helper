@@ -1,0 +1,32 @@
+# 构建产物（build_apk.py 生成）
+*.apk
+*.idsig
+*.dex
+*.class
+classes/
+dex/
+gen/
+compiled/
+build/
+app-*.apk
+
+# 签名密钥 —— 千万别外传，外传等于别人能签出"能覆盖安装你这份"的包
+*.keystore
+*.jks
+work/keys/
+
+# 抓包 / 调试产物
+*.har
+*.pcap
+work/
+
+# IDE / 本机设置
+.idea/
+*.iml
+.gradle/
+local.properties
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
+desktop.ini

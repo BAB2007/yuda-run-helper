@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.ledao.tester"
+    android:versionCode="119"
+    android:versionName="1.0.19(测试版)">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 跑步前把后台的步道乐跑进程干掉。
+         否则它会在跑步中途自己刷新令牌（单会话），把我们的令牌顶掉 →
+         后半程全返回 102「该账号已在其他手机登录」，OSS 凭证拿不到，整趟白跑。
+         这是普通权限，安装即得，不需要 root。 -->
+    <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
+    <uses-permission android:name="android.permission.GET_TASKS" />
+    <!-- 用于自动开关系统代理（Android 10 以下没有 VPN 通道时才会用到；
+         未授权时退化为手动设置并给出提示）
+         一次性授权：adb shell pm grant com.ledao.tester android.permission.WRITE_SECURE_SETTINGS -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
+    <!-- ★ 2026-10-10 用户第 2 条：助手被切到后台时，跑步出错要"像收消息一样"提醒。
+         本 APK 的 targetSdk 还是 28，Android 13/14 会在建通知渠道那一下自动弹一次
+         授权框；Android 15 以后这条例外没了，所以 MainActivity 还会显式申请一次
+         （askNotifyPermission）。这条权限被拒**不影响跑步**，只是后台不再提醒。 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="28" />
+
+    <!-- ★ 用 NoActionBar 主题：去掉系统那条黑色标题栏（用户要求） -->
+    <application
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:allowBackup="false"
+        android:usesCleartextTraffic="true"
+        android:hardwareAccelerated="true">
+
+        <!-- ★ launchMode=singleTask 是必须的：助手为了抢身份会反复
+             「打开步道乐跑 → 切回助手」，只有 singleTask 才能保证切回来时
+             复用同一个实例（否则新建实例 → worker 归零 → 又开一局 →
+             多个跑步线程抢同一个账号会话 → 服务端一路 102）。 -->
+        <activity
+            android:name=".MainActivity"
+            android:label="@string/app_name"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 抓包守护：跑步期间保证进程不被后台清理杀掉 -->
+        <service
+            android:name=".SniffGuard"
+            android:exported="false"
+            android:stopWithTask="false" />
+
+        <!-- VPN 抓包通道（Android 10+）：不用改系统代理，也不需要 adb 授权。
+             用户只需授权一次「允许 VPN」。 -->
+        <service
+            android:name=".ProxyVpn"
+            android:exported="false"
+            android:permission="android.permission.BIND_VPN_SERVICE">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

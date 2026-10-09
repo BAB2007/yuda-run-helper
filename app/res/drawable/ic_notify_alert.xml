@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ic_notify_alert —— 通知栏用的小图标（2026-10-10 用户第 2 条）。
+
+  ★ 为什么必须自带一张，不能拿 android.R.drawable.stat_notify_error 顶替：
+    Notification.Builder.setSmallIcon(int) 只存一个**资源 id**，真正解析它的是
+    系统（NotificationManagerService / SystemUI），而它解析时用的包名是**发通知
+    的那个 App**。framework 的 id 在我们包里根本不存在 —— 运气好是通知栏里一块
+    空白，运气不好整条通知被丢掉。
+
+  ★ 为什么是纯白单色：Android 5.0 起，通知栏小图标会被系统当成 alpha 蒙版染色，
+    彩色图会被压成一坨白色方块。这张只有一个 #FFFFFFFF 的填充色，正合适。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,2C6.48,2 2,6.48 2,12s4.48,10 10,10 10,-4.48 10,-10S17.52,2 12,2zM13,17h-2v-2h2v2zM13,13h-2L11,7h2v6z" />
+</vector>
