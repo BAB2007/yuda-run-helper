@@ -2931,9 +2931,14 @@ public class Ledao {
                 log.log("         去首页点「🧑 设置人脸照片」重新选一张原图。");
                 return "";
             }
+            int tail = jpegTailBytes(jpg);
             log.log(String.format(Locale.US,
-                    "      [人脸] 照片体检通过：%d×%d / %d 字节 / 尾标记 EOI 正常",
-                    bo.outWidth, bo.outHeight, jpg.length));
+                    "      [人脸] 照片体检通过：%d×%d / %d 字节 / EOI 在 %d 字节处%s",
+                    bo.outWidth, bo.outHeight, jpg.length, jpegEoi(jpg) + 2,
+                    tail > 0
+                        ? String.format(Locale.US,
+                                " / 后面另有 %d 字节附加数据（不参与解码，原样上传）", tail)
+                        : " / 没有多余尾巴"));
             if (jpg.length > 900 * 1024) {
                 log.log(String.format(Locale.US,
                         "      ⚠ 人脸照片偏大（%.1f MB，真机约 0.2 MB）——"
@@ -3077,12 +3082,34 @@ public class Ledao {
      *
      * 判据（本地几百微秒）：
      *   ① 头必须是 FF D8；
-     *   ② 尾必须是 FF D9 —— **少了 EOI 就是没写完**，而带 FF D8 的半截文件
-     *      恰恰能骗过原来那句只查头两字节的自检。
+     *   ② 顺着 JPEG 的段结构走到 EOI（FF D9）—— **走不到就是没写完**，
+     *      而带 FF D8 的半截文件恰恰能骗过原来那句只查头两字节的自检。
+     *
+     * <h3>★★★ 2026-10-10 真机事故：原来的判据②是错的</h3>
+     * 原来写的是「**文件最后两字节**必须是 FF D9」。用户的真机日志：
+     * <pre>
+     *   ❌ 人脸照片文件本身就不完整：JPEG 没有结尾标记 EOI（尾部是 DC A6 A1 64）
+     *   ❌ 起跑前人脸核验没过 —— 本场不跑了
+     * </pre>
+     * 把那 218529 字节拉回来一看：**SOI 在 0、EOI 在 218503，是一张完好的
+     * 1024×1366 的 JPEG**，PIL 严格模式（不设 LOAD_TRUNCATED_IMAGES）能完整解码、
+     * {@code verify()} 也通过 —— 只是 EOI **后面还挂了 24 字节**附加数据。
+     *
+     * <p>JPEG 规范**允许 EOI 之后有任何东西**（填充、第二张图、厂商附加信息），
+     * 解码器一律忽略。所以「以 FF D9 结尾」从来就不是"文件完整"的判据，
+     * 它只是"这张图恰好没有尾巴"。用户的照片于是被我们自己的检查拦下，
+     * 而且照提示"重新选一张原图"再选一次还是同一张 —— **死循环，跑不了**。
+     *
+     * <p>现在改成**按段结构走**：APPn/COM/DQT/SOF/DHT/SOS 各自带长度字段，
+     * 按长度跳过；SOS 之后的熵编码数据里逐字节找真标记（跳过 FF00 转义和
+     * RSTn 重启标记）；一直走到 EOI 就算完整。
+     * <b>顺带修好一个更隐蔽的坑</b>：EXIF 缩略图就藏在 APP1 段**里面**，
+     * 它自带一对 FF D8/FF D9 —— 用"全文找找有没有 FF D9"的写法会把
+     * **一张被截断的图误判成完好的**（APP1 的长度字段让我们整段跳过它，不会误伤）。
      *
      * @return "" 表示健康；否则是一句人话原因
      */
-    static String jpegDiag(byte[] jpg) {
+    public static String jpegDiag(byte[] jpg) {
         if (jpg == null || jpg.length < 128) {
             return "文件只有 " + (jpg == null ? 0 : jpg.length) + " 字节（太小，不可能是照片）";
         }
@@ -3090,13 +3117,63 @@ public class Ledao {
             return String.format(Locale.US, "开头不是 JPEG 标记（%02X %02X）",
                     jpg[0] & 0xFF, jpg[1] & 0xFF);
         }
-        int n = jpg.length;
-        if ((jpg[n - 2] & 0xFF) != 0xFF || (jpg[n - 1] & 0xFF) != 0xD9) {
+        if (jpegEoi(jpg) < 0) {
+            int n = jpg.length;
             return String.format(Locale.US,
-                    "JPEG 没有结尾标记 EOI（尾部是 %02X %02X %02X %02X）—— 这个文件写了一半",
+                    "JPEG 的段结构走到文件末尾也没遇到结尾标记 EOI（尾部是 %02X %02X %02X %02X）"
+                    + " —— 这个文件写了一半",
                     jpg[n - 4] & 0xFF, jpg[n - 3] & 0xFF, jpg[n - 2] & 0xFF, jpg[n - 1] & 0xFF);
         }
         return "";
+    }
+
+    /**
+     * 顺着 JPEG 的段结构走一遍，返回 **EOI（FF D9）那个 FF 的偏移**；找不到返回 -1。
+     *
+     * <p>这是 {@link #jpegDiag} 的真身，单独抽出来是因为调用方还要拿它算
+     * "EOI 之后还剩多少字节"（那些字节不参与解码，但如实报出来心里有数）。
+     *
+     * <p>只读、纯字节运算 —— 所以能脱离 Android 在离线回归里逐条对拍（见 FacePhotoTest）。
+     */
+    public static int jpegEoi(byte[] jpg) {
+        if (jpg == null || jpg.length < 4) return -1;
+        int n = jpg.length, i = 2;
+        while (i + 1 < n) {
+            if ((jpg[i] & 0xFF) != 0xFF) { i++; continue; }   // 不在标记上：结构坏了，往后挪
+            int m = jpg[i + 1] & 0xFF;
+            if (m == 0xFF) { i++; continue; }                 // 标记前的填充字节
+            if (m == 0x00) { i += 2; continue; }              // 熵数据里的 FF00 转义
+            if (m == 0xD9) return i;                          // ★ EOI
+            if (m == 0xD8 || m == 0x01 || (m >= 0xD0 && m <= 0xD7)) { i += 2; continue; }  // 不带长度
+            if (i + 3 >= n) return -1;                        // 长度字段本身就不全 → 截断
+            int len = ((jpg[i + 2] & 0xFF) << 8) | (jpg[i + 3] & 0xFF);
+            if (len < 2) return -1;                           // 段长非法
+            if (m == 0xDA) {
+                // SOS：段头之后是熵编码数据，逐字节找下一个**真**标记
+                int j = i + 2 + len;
+                while (j + 1 < n) {
+                    if ((jpg[j] & 0xFF) != 0xFF) { j++; continue; }
+                    int k = jpg[j + 1] & 0xFF;
+                    if (k == 0xFF) { j++; continue; }                        // 填充
+                    if (k == 0x00 || (k >= 0xD0 && k <= 0xD7)) { j += 2; continue; }  // 转义 / 重启
+                    break;                                                    // 真标记，交回外层
+                }
+                i = j;
+                continue;
+            }
+            i += 2 + len;                                    // 带长度的段：整段跳过
+        }
+        return -1;
+    }
+
+    /**
+     * EOI 之后还有多少字节（"尾巴"）。没有尾巴返回 0；压根不是完整 JPEG 也返回 0。
+     * 只用来打一行说明，不参与任何判断。
+     */
+    public static int jpegTailBytes(byte[] jpg) {
+        int eoi = jpegEoi(jpg);
+        if (eoi < 0) return 0;
+        return Math.max(0, jpg.length - (eoi + 2));
     }
 
     /** 上一次核验拿到的 id —— 真机在 `this.d` 非空时会把它带回下一次请求 */

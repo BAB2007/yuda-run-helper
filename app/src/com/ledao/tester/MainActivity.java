@@ -3030,6 +3030,8 @@ public class MainActivity extends Activity implements Ledao.Log {
      *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest dialog
      *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest flash
      *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest notify
+     *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest devnote
+     *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest face
      * </pre>
      *
      * <ul>
@@ -3040,6 +3042,10 @@ public class MainActivity extends Activity implements Ledao.Log {
      *       两样都不留残留（pending 会被 flush 消费掉）。</li>
      *   <li>{@code devnote} —— 强制弹一次开发者留言（勾了「不再弹出」也照弹），
      *       看那四颗复制小按键排得对不对。</li>
+     *   <li>{@code face} —— 只读 files/face.jpg，把跑前那两道体检（JPEG 段落结构 +
+     *       本机解码器）单独跑一遍。**不联网、不跑步、不碰用户数据**。
+     *       2026-10-10 加：那天用户的照片被第一道关误拦（EOI 后面挂了 24 字节尾巴），
+     *       而这种错要等"真跑一次"才暴露 —— 有这个自检就不用赌。</li>
      *   <li>{@code bg} / {@code bgclear} —— 第 5 条（背景半透明）只能看图。
      *       {@code bg} 会**当场画一张黑白棋盘图**存成 files/bgtest.png 并铺成背景，
      *       透过去多少一眼就能看出来；{@code bgclear} 恢复纯色主题。
@@ -3052,6 +3058,46 @@ public class MainActivity extends Activity implements Ledao.Log {
             // 留言弹窗平时勾了「不再弹出」就看不到了，自检里强制看一次
             DevNote.show(this, null);
             log("[自检] 开发者留言弹窗（看那四个复制小按键）");
+            return;
+        }
+        if ("face".equals(kind)) {
+            /* ★ 2026-10-10 新加：跑前人脸体检一共有两道关（JPEG 结构 + 本机解码器），
+             *   而它只在"真的开跑"时才走 —— 上次被误拦就是因为这两道关里第一道写错了，
+             *   却要等用户真跑一次才发现。这个自检把两道关单独跑一遍：不联网、不跑步、
+             *   不碰用户任何数据，只读 files/face.jpg。 */
+            File f = faceFile();
+            if (!f.exists()) {
+                log("[自检] 还没设置人脸照片（" + f.getAbsolutePath() + " 不存在）");
+                return;
+            }
+            try {
+                byte[] jpg = new byte[(int) f.length()];
+                java.io.DataInputStream in = new java.io.DataInputStream(
+                        new java.io.FileInputStream(f));
+                in.readFully(jpg);
+                in.close();
+
+                String bad = Ledao.jpegDiag(jpg);
+                log(String.format(Locale.US,
+                        "[自检] 人脸体检①结构：%s（%d 字节，EOI 在 %d，尾巴 %d 字节）",
+                        bad.length() == 0 ? "通过 ✅" : "没过 ❌ " + bad,
+                        jpg.length, Ledao.jpegEoi(jpg), Ledao.jpegTailBytes(jpg)));
+
+                android.graphics.BitmapFactory.Options bo =
+                        new android.graphics.BitmapFactory.Options();
+                bo.inJustDecodeBounds = true;
+                android.graphics.BitmapFactory.decodeByteArray(jpg, 0, jpg.length, bo);
+                boolean ok2 = bo.outWidth > 0 && bo.outHeight > 0;
+                log(String.format(Locale.US,
+                        "[自检] 人脸体检②本机解码器：%s（%dx%d）",
+                        ok2 ? "通过 ✅" : "没过 ❌ 报不出宽高", bo.outWidth, bo.outHeight));
+
+                log(bad.length() == 0 && ok2
+                        ? "[自检] 结论：这张照片跑前那道关会放行 —— 可以正常开跑"
+                        : "[自检] 结论：跑前会被拦下（和真跑时的判断一致）");
+            } catch (Throwable t) {
+                log("[自检] 读人脸照片失败：" + Err.one(t));
+            }
             return;
         }
         if ("bg".equals(kind) || "bgclear".equals(kind)) {
