@@ -23,7 +23,7 @@
 选择 **Download ZIP**，下载完成后解压即可。
 
 不想下整个压缩包的话，直接进
-[`宇达步道乐跑助手/`](宇达步道乐跑助手/) 目录点那个 APK，再点 **Download raw file** 就行。
+[`宇达步道乐跑助手/`](https://github.com/BAB2007/yuda-run-helper/blob/main/宇达步道乐跑助手/) 目录点那个 APK，再点 **Download raw file** 就行。
 **仓库里只留一份安装包，文件名带版本号** —— 当前版本：**v1.0.29(测试版)**，
 文件名 `宇达步道乐跑助手-v1.0.29.apk`。装完打开，**标题栏右侧就是版本号**，
 对不上就是下到了旧的（下到了旧的按 `Ctrl+F5` 强刷一次页面）。
@@ -58,7 +58,7 @@
 
 > ⚠️ 跑步期间**不要同时打开步道乐跑**。它是单会话登录，两边同时在线会互相顶掉。
 
-更细的图文步骤、常见问题在 **[使用说明.md](使用说明.md)**。
+更细的图文步骤、常见问题在 **[使用说明.md](https://github.com/BAB2007/yuda-run-helper/blob/main/使用说明.md)**。
 
 ---
 
@@ -86,9 +86,9 @@
 4. 路过打卡点照样打卡；中途刷脸就用你存的那张自拍走同一套核验；
 5. 收尾照样上传那三段文件。
 
-![步道乐跑与助手原理对比](doc/principle-compare.png)
+![步道乐跑与助手原理对比](https://github.com/BAB2007/yuda-run-helper/raw/main/doc/principle-compare.png)
 
-![报文层：两边发出去的是同一种请求](doc/principle-protocol.png)
+![报文层：两边发出去的是同一种请求](https://github.com/BAB2007/yuda-run-helper/raw/main/doc/principle-protocol.png)
 
 **所以**
 
@@ -111,7 +111,7 @@
 > 软件制作不易，不强制收费，允许白嫖，但也不拒绝打赏，回回血[doge]
 
 <div align="center">
-  <img src="app/assets/pay_qr.png" width="230" alt="支付宝收款码">
+  <img src="https://github.com/BAB2007/yuda-run-helper/raw/main/app/assets/pay_qr.png" width="230" alt="支付宝收款码">
   <br>
   <sub>支付宝扫这个码就行（另一个手机扫、或者截图下来扫都可以）；不扫也完全没关系，功能一个不少。</sub>
 </div>
@@ -138,7 +138,7 @@
 6. **尊重官方**：本软件与步道乐跑官方无任何关系，未获得其授权或认可。
    如果官方明确反对，请立即停止使用并删除本软件；作者也会在收到相关要求后
    果断删库跑路。
-7. **开源许可**：本项目以 **Apache-2.0** 许可开源（见 [LICENSE](LICENSE)），
+7. **开源许可**：本项目以 **Apache-2.0** 许可开源（见 [LICENSE](https://github.com/BAB2007/yuda-run-helper/blob/main/LICENSE)），
    请保留版权与许可声明；使用本项目代码产生的一切后果由使用者自负。
 8. **锻炼本身是必要的**：冬天跑校园跑很 cs，但**如果有别的锻炼形式，大家还是要锻炼一下的**。
    本软件是否存活以及是否更新的决策权在作者本人，受到不可抗拒因素的影响时会果断删库跑路。
