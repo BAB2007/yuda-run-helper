@@ -173,6 +173,23 @@ public class Ledao {
          * @param warn true=红卡片（出事了但继续跑），false=绿卡片
          */
         default void onFlash(String text, boolean warn) { }
+
+        /**
+         * ★★★ v1.0.25：每一拍报一次进度 —— **给后台通知用**（docs/59）。
+         *
+         * <p>为什么要它：跑步改成可以息屏 / 切走之后，用户唯一的"仪表盘"就是
+         * 那条常驻通知。原来它只写着一句「抓包进行中」，跑了多远、到哪了
+         * 一概看不见 —— 息屏揣兜里十几分钟，人是没法判断"到底还在不在跑"的。
+         *
+         * <p>默认实现是空的，所以老实现类不用改。参数口径与日志里那行心跳完全一致：
+         * {@code validM} 是**上报里程**（刷脸缺口不算），{@code totalM} 是路线进度。
+         *
+         * @param validM 有效里程（米，上报口径）
+         * @param totalM 路线进度（米）
+         * @param secs   已经跑了多少秒
+         * @param hit    已完成的打卡点个数
+         */
+        default void onTick(double validM, double totalM, long secs, int hit) { }
     }
 
     private final TreeMap<String, String> ident = new TreeMap<>();
@@ -1864,6 +1881,7 @@ public class Ledao {
              *   算进里程。我们照抄这个口径：**几何长度 > 上报里程**才是真机的样子。 */
             double validM = 0;                // 有效里程（m）—— 唯一会被上报的那个数
             double elapsedSec = 0;                        // 已跑时长（速度按时间推进）
+            int slowTicks = 0;                // ★ v1.0.25：这一场"被拖长"的拍数（后台被限制的信号）
             // 预计总时长：用区间中值速度估，只用于「收尾减速段」的定位
             double totalTSec = rp.length / Math.max(0.5, vMid);
             int n = (int) (totalTSec / intervalSec) + 4;
@@ -2355,10 +2373,27 @@ public class Ledao {
                 // ★ 实时刷新界面上的「跑步路线」小地图
                 try { log.onRoute(all, rp.pts, pos[0], pos[1], doneIds.size(), v); }
                 catch (Throwable ignore) { }
+                // ★ v1.0.25：同一拍把进度喂给后台通知（息屏/切走时用户就看它）
+                try { log.onTick(validM, totalM, (long) elapsedSec, doneIds.size()); }
+                catch (Throwable ignore) { }
                 // ★ 把本次 HTTP 耗时从间隔里扣掉，否则实际配速会被网络延迟拖慢
                 //   （实测：不扣的话 2.2 m/s 会跑成 511 s/km，超出 480 的规则上限）
                 long spent = System.currentTimeMillis() - tickStart;
-                long wait = (long) (intervalSec * 1000) - spent;
+                long plan = (long) (intervalSec * 1000);
+                /* ★★★ v1.0.25：这一拍明显超时就说一句 —— 后台运行最需要这个信号。
+                 *   唤醒锁正常情况下不会超时；真超了多半是
+                 *     ① 网络慢 / 服务端那头卡住；② 系统把进程冻了一下（省电策略太狠）。
+                 *   两种情况都会把配速往"慢"的方向拖，而服务端卡着 480 s/km 的上限。 */
+                if (spent > plan + 2500) {
+                    slowTicks++;
+                    if (slowTicks <= 3 || slowTicks % 50 == 0) {
+                        log.log(String.format(Locale.US,
+                                "      ⚠ 这一拍比计划多了 %.1f 秒（计划 %.1f / 实际 %.1f）——"
+                                + "网络慢，或者系统把进程冻了一下；已经在跑，继续。",
+                                (spent - plan) / 1000.0, plan / 1000.0, spent / 1000.0));
+                    }
+                }
+                long wait = plan - spent;
                 if (!sleep(Math.max(0, wait))) break;
                 if (lastTick) break;        // 末拍已经处理完（含终点打卡），收工
                 }                           // ← 对应上面那个 else（刷脸暂停时不做推进）

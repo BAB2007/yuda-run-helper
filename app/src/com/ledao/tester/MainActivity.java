@@ -97,7 +97,7 @@ public class MainActivity extends Activity implements Ledao.Log {
     // ---------------- UI
     private EditText etIdent;
     private TextView tvLog, tvStatus, tvIdentBrief, tvRouteHead, tvRouteInfo, tvTitle, tvAutoInfo;
-    private Button btnRun, btnSniff, btnClear, btnProxyHelp, btnCopyLog, btnCa, btnEdit, btnRealId, btnFace;
+    private Button btnRun, btnSniff, btnClear, btnProxyHelp, btnCopyLog, btnCa, btnEdit, btnRealId, btnFace, btnBg;
     private Button btnMenu;
     /** 地图卡片的容器 */
     private CampusMapView map;
@@ -136,13 +136,21 @@ public class MainActivity extends Activity implements Ledao.Log {
     //  所以互斥量、Ledao 句柄、日志落点全部改成进程级。
     // ==================================================================
     /** 进程级「有跑步在跑」互斥量 */
-    private static volatile boolean RUN_ACTIVE = false;
-    /** 当前正在跑的 Ledao 句柄（停止按钮要用） */
+    private static volatile boolean RUN_ACTIVE = false;    /** 当前正在跑的 Ledao 句柄（停止按钮要用） */
     private static volatile Ledao RUN_LEDAO = null;
     /** 跑步线程本身 */
     private static volatile Thread RUN_WORKER = null;
     /** 当前活着的 Activity —— 旧线程的日志要打到它上面，而不是已经销毁的那个 */
     private static volatile MainActivity LIVE = null;
+
+    /**
+     * ★ v1.0.25：这个界面已经被销毁了（划掉 / 系统回收）。
+     *
+     * <p>跑步线程还在跑，它照样会调 {@code log()} / {@code onRoute()} —— 那些方法
+     * 不要再往一个没有窗口的 Activity 上贴文字（会白干活，个别 ROM 还会报警告）。
+     * 日志照旧写 logcat 和 files/run.log，收尾也照旧。
+     */
+    private volatile boolean dead = false;
 
     /** 「只抓到 uid+token」时的快速兜底是否已排上（别重复排定时器） */
     private boolean quickFallbackArmed = false;
@@ -281,6 +289,15 @@ public class MainActivity extends Activity implements Ledao.Log {
         // ★ 如果跑步线程还在跑，按钮要恢复成「停止跑步」，别显示成可再开一局
         if (RUN_ACTIVE) setRunBtn(true);
         updateFaceBtn();          // 人脸照片按钮状态（docs/28）
+        updateBgBtn();            // ★ v1.0.25：后台运行白名单状态（docs/59）
+        restoreRunLog();          // ★ v1.0.25：把上一次（或被系统杀掉那次）的日志从磁盘捞回来
+        /* ★ v1.0.25：如果本进程里跑步还在跑（用户把界面划掉又打开），
+         *   把通知里的进度接着刷起来 —— notiAt 归零，下一拍就会刷一次。 */
+        if (RUN_ACTIVE) {
+            notiAt = 0;
+            SniffGuard.runMode = true;
+            log("★ 跑步还在跑（进程没死）—— 界面只是重新接管显示；日志、唤醒锁、通知都在。");
+        }
         // 从步道乐跑切回来时，把代理回调重新挂到当前 Activity 上
         if (LocalProxy.listening()) {
             LocalProxy p = LocalProxy.current();
@@ -302,9 +319,21 @@ public class MainActivity extends Activity implements Ledao.Log {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        // ★ 只停进程级那个句柄；Activity 被重建时**不要**把正在跑的跑步线程停掉，
-        //   否则「切到步道乐跑再切回来」就会把跑步打断。
-        if (RUN_LEDAO != null) RUN_LEDAO.stop();
+        /* ★★★ v1.0.25（docs/59）：界面被销毁**不再**停掉正在跑的跑步线程。
+         *
+         *   以前这里是"不管界面为什么被销毁，都先把跑步线程停掉"（拿 RUN_LEDAO
+         *   那个句柄调一次 stop）。于是「从最近任务里把助手划掉」等于点了
+         *   「■ 停止跑步」：这一场不生成记录，而那条常驻通知还挂着
+         *   （SniffGuard 有 stopWithTask="false"），看着像还在跑，其实早就停了。
+         *   用户根本分不清。
+         *
+         *   现在把所有权摆正：跑步归**进程**管（RUN_ACTIVE / RUN_LEDAO / RUN_WORKER
+         *   都是静态的），界面只是"看它的一扇窗"。划掉窗口：
+         *     · 跑步继续跑、继续收尾上报（前台服务 + 唤醒锁撑着，见 SniffGuard）；
+         *     · 日志继续往 files/run.log 里写（进程被杀也留得住）；
+         *     · 重新打开 App，按钮直接显示「■ 停止跑步」，日志把断掉那一段从磁盘捞回来。
+         *   想停就跑回来点「停止跑步」，或者点通知回到界面 —— 不再是"划掉即停止"。 */
+        dead = true;
         if (LIVE == this) LIVE = null;
         // ★ 抓包守护还活着时不能停 —— 那正是要它继续抓的时候（进程还在，端口还占着，
         //   但因为有单例，下次进来会复用，不会再 EADDRINUSE）
@@ -483,6 +512,21 @@ public class MainActivity extends Activity implements Ledao.Log {
         btnFace.setMinimumHeight(0);
         btnFace.setOnClickListener(v -> facePhotoMenu());
         idBox.addView(btnFace);
+
+        /* ★★★ v1.0.25（docs/59）：「后台运行」这一行。
+         *   跑步期间可以息屏 / 切走 —— 但前提是系统别把它清掉：
+         *     · AOSP 那一层是"电池优化白名单"（点这里申请，走系统弹窗）；
+         *     · MIUI 还有自己的一套「省电策略 / 自启动」，那个只能用文字引导。
+         *   这一行同时当**状态显示**：进没进白名单一眼可见。 */
+        btnBg = new Button(this);
+        btnBg.setTextSize(10.5f);
+        btnBg.setTextColor(Color.parseColor("#00695C"));
+        btnBg.setBackgroundColor(Color.TRANSPARENT);
+        btnBg.setPadding(0, dp(2), 0, 0);
+        btnBg.setMinHeight(0);
+        btnBg.setMinimumHeight(0);
+        btnBg.setOnClickListener(v -> askBackgroundPermission());
+        idBox.addView(btnBg);
 
         root.addView(idBox);
         /* ★★★ 2026-10-10 第 5 条踩到的老 bug：
@@ -1072,8 +1116,7 @@ public class MainActivity extends Activity implements Ledao.Log {
      * 一整场就废了。现在哪怕只是"尾部有 0 填充"也会挂个 ⚠。
      */
     private void updateFaceBtn() {
-        if (btnFace == null) return;
-        File f = new File(getFilesDir(), "face.jpg");
+        if (btnFace == null) return;        File f = new File(getFilesDir(), "face.jpg");
         if (f.exists() && f.length() > 0) {
             String warn = "";
             byte[] b = readFileBytes(f);
@@ -1090,6 +1133,109 @@ public class MainActivity extends Activity implements Ledao.Log {
 
     /** 人脸照片路径 */
     private File faceFile() { return new File(getFilesDir(), "face.jpg"); }
+
+    // ==================================================================
+    //  后台运行（v1.0.25，docs/59）
+    // ==================================================================
+
+    /**
+     * ★★★ v1.0.25：把磁盘上那份运行日志捞回界面。
+     *
+     * <p>三种情况都会走到这里，而且都值得让用户看见：
+     * <ol>
+     *   <li>上次被系统清掉了（MIUI 省电策略太狠 / 内存不够）—— 界面日志本来就随进程
+     *       一起没了，只有这份落盘的还在，用户点「复制日志」就能发出来；</li>
+     *   <li>跑步**还在跑**（用户把界面划掉又打开）—— 断掉那一段接回来；</li>
+     *   <li>上一场正常跑完，想回头看看（这份会一直留到下一场开始）。</li>
+     * </ol>
+     *
+     * <p>读完就归档改名（{@link RunLog#archive}），所以**不会每次开 App 都重复显示**。
+     * 正在跑的那种情况不归档 —— 文件还得接着写。
+     */
+    private void restoreRunLog() {
+        try {
+            boolean writing = RunLog.active();
+            String tail = RunLog.tail(getFilesDir(), 60000);
+            if (tail.length() > 0) {
+                log("");
+                log("══════ 下面是从磁盘捞回来的日志（files/" + RunLog.NAME
+                        + (writing ? "，这一场还在写" : "，上一次留下的") + "）══════");
+                for (String ln : tail.split("\n")) {
+                    if (ln.length() > 0) logLine(ln, false);   // ★ 不再写回磁盘，免得越滚越多
+                }
+                log("══════ 磁盘日志到此为止 ══════");
+                log("");
+            }
+            if (!writing) RunLog.archive(getFilesDir());
+        } catch (Throwable ignore) {
+            /* 捞不回来也不影响任何事 */
+        }
+    }
+
+    /**
+     * 「🔋 后台运行设置」那一行的文案 —— 顺便当状态显示。
+     *
+     * <p>进没进"电池优化白名单"一眼可见；没进就提示点一下申请。
+     * MIUI 那套「省电策略 / 自启动」读不出来（不是公开 API），只能写在日志里引导。
+     */
+    private void updateBgBtn() {
+        if (btnBg == null) return;
+        boolean ign = ignoringBatteryOpt();
+        btnBg.setText(ign
+                ? "🔋 后台运行：已加白名单（息屏 / 切走都能跑）"
+                : "🔋 后台运行：还没加白名单 —— 点这里申请（息屏 / 切走后不被清）");
+    }
+
+    /** 现在是否已经在"电池优化白名单"里（拿不到就当作没有，反正点了会走兜底） */
+    private boolean ignoringBatteryOpt() {
+        try {
+            android.os.PowerManager pm =
+                    (android.os.PowerManager) getSystemService(POWER_SERVICE);
+            return pm != null && pm.isIgnoringBatteryOptimizations(getPackageName());
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * ★★★ v1.0.25：申请"后台运行"（docs/59）。
+     *
+     * <p>两层，缺一层都可能被清掉：
+     * <ol>
+     *   <li><b>AOSP 电池优化</b>：这个能直接用系统弹窗申请
+     *       （{@code ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS}），点「允许」即可；</li>
+     *   <li><b>MIUI 的省电策略 / 自启动</b>：不是公开 API，申请不了 ——
+     *       所以这里把路径写清楚，让用户自己点两下（设置 → 应用 → 跑步测试助手）。</li>
+     * </ol>
+     */
+    private void askBackgroundPermission() {
+        boolean ign = ignoringBatteryOpt();
+        log(ign ? "[后台] 电池优化白名单：已经在里面 ✅" : "[后台] 电池优化白名单：还没进 —— 现在申请");
+        log("   MIUI 上还有一层，不管上面那步成不成都要做：设置 → 应用 → 管理应用 →"
+                + " 跑步测试助手 → 省电策略选「无限制」，并把「自启动」打开；"
+                + "最近任务里给它下拉加个锁更稳。");
+        if (ign) {
+            Toast.makeText(this, "已经在白名单里了；MIUI 的「省电策略」也记得设成无限制",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        try {
+            Intent i = new Intent(
+                    android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+            i.setData(Uri.parse("package:" + getPackageName()));
+            startActivity(i);
+            log("   系统弹窗里点「允许」。");
+        } catch (Throwable t) {
+            log("   这台机器不给直接申请（" + Err.one(t) + "），改成打开电池优化列表 ——"
+                    + "在里面找到「跑步测试助手」并允许。");
+            try {
+                startActivity(new Intent(
+                        android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+            } catch (Throwable t2) {
+                logFail("打开电池优化设置", t2);
+            }
+        }
+    }
 
     /** 选人脸照片（走 ACTION_GET_CONTENT 而不是相机，助手没有相机权限） */
     private void pickFacePhoto() {
@@ -1828,6 +1974,33 @@ public class MainActivity extends Activity implements Ledao.Log {
         worker = new Thread(() -> {
             RUN_ACTIVE = true;                 // ★ 立刻置位（放线程里也行，但要保证早于任何网络调用）
             RUN_LEDAO = L;
+            /* ★★★ v1.0.25（docs/59）：后台运行的三件套，在**任何网络调用之前**挂上。
+             *
+             *   ① 前台服务：进程优先级提到"前台服务"，切走/息屏不会被顺手清掉。
+             *      （抓包那条路早就起了它；这里兜底 —— 用户可能没走「自动提取」，
+             *       或者提取完那一下就把它停了。）
+             *   ② PARTIAL_WAKE_LOCK：**前台服务不保证 CPU 不睡**，这把锁才保证。
+             *      息屏后节拍被拉长 → 配速被拖慢 → 可能撞上服务端 480 s/km 的上限。
+             *      45 分钟是兜底超时（一场撑死 30 分钟），防止哪条路径忘了释放。
+             *   ③ files/run.log：日志同步落盘并 flush，进程被系统清掉也能捞回来。
+             */
+            try {
+                if (!SniffGuard.alive) SniffGuard.start(MainActivity.this);
+                SniffGuard.runMode = true;
+                SniffGuard.holdAwake(MainActivity.this, 45L * 60 * 1000);
+                SniffGuard.setText(MainActivity.this, "准备起跑…（可以息屏 / 切到别的应用）");
+                RunLog.start(getFilesDir(), String.format(Locale.US,
+                        "══════ 本场开始 %s  目标 %.2f km ══════",
+                        new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date()), fKm));
+                log("★ 后台运行已就绪：前台服务 + 唤醒锁（"
+                        + (SniffGuard.awake() ? "已持有 ✅" : "没拿到 ❌ 息屏后节拍可能被拉长")
+                        + "）+ 日志落盘 files/" + RunLog.NAME + "（"
+                        + (RunLog.active() ? "可写 ✅" : "写不了 ❌") + "）");
+                log("   跑步期间**可以息屏、可以切到别的应用**；唯独别从最近任务里把助手划掉 ——"
+                        + "划掉只是关掉这扇窗，跑步照跑（想停就点回来按「■ 停止跑步」）。");
+            } catch (Throwable t) {
+                log("⚠ 后台运行三件套没挂全（不影响跑步）：" + t);
+            }
             try {
             // ★ 先抢会话：结束步道乐跑 → 用手上令牌确认可用
             if (!prepareSession(L)) {
@@ -1917,6 +2090,18 @@ public class MainActivity extends Activity implements Ledao.Log {
                 RUN_ACTIVE = false;
                 RUN_LEDAO = null;
                 RUN_WORKER = null;
+                /* ★ v1.0.25：这一场结束了（正常 / 出错 / 用户点停止都是这里）——
+                 *   放掉唤醒锁、收掉日志文件、把通知改回"抓包"那句话。
+                 *   必须放在 finally：不然出错退出会把锁一直攥着耗电。 */
+                try {
+                    SniffGuard.dropAwake();
+                    RunLog.stop();
+                    SniffGuard.runMode = false;
+                    SniffGuard.setText(MainActivity.this, null);
+                    log("★ 后台运行已收尾：唤醒锁已释放（"
+                            + (SniffGuard.awake() ? "还持有 ❌" : "已释放 ✅")
+                            + "），日志留在 files/" + RunLog.NAME);
+                } catch (Throwable ignore) { }
             }
         }, "ledao-run");
         RUN_WORKER = worker;
@@ -2462,7 +2647,10 @@ public class MainActivity extends Activity implements Ledao.Log {
         ui.post(() -> {
             LocalProxy.shutdown();          // ★ 单例，彻底关掉才不会再占 8899
             proxy = null;
-            SniffGuard.stop(this);
+            /* ★ v1.0.25：跑步进行中不关保命服务 —— 唤醒锁和前台优先级都靠它
+             *   （抓包那条路结束了不影响跑步；跑步自己会在收尾时改通知文案）。 */
+            if (!RUN_ACTIVE) SniffGuard.stop(this);
+            else log("[抓包] 跑步进行中 —— 保命服务继续留着（唤醒锁挂在它上面）");
             stopVpnIfAny();
             restoreProxy();
             updateSniffBtn();
@@ -3082,11 +3270,29 @@ public class MainActivity extends Activity implements Ledao.Log {
     // ==================================================================
     @Override
     public void log(String s) {
+        logLine(s, true);
+    }
+
+    /**
+     * ★ v1.0.25（docs/59）：日志现在有**三个去处**。
+     *
+     * <ol>
+     *   <li>logcat（tag {@code LedaoTester}）—— 一直都有；</li>
+     *   <li>{@code files/run.log} —— 跑步期间的每一行都同步落盘并 flush，
+     *       这样"进程被系统清掉"之后还能把日志捞回来（{@link RunLog}）；</li>
+     *   <li>界面上的日志框 —— 界面还在才贴；被销毁了就跳过（跑步不受影响）。</li>
+     * </ol>
+     *
+     * @param persist 从磁盘捞回来的旧日志不要再写回磁盘（{@code false}），否则会越滚越多
+     */
+    private void logLine(String s, boolean persist) {
         String line = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()) + "  " + s;
         android.util.Log.i("LedaoTester", s);
+        if (persist && RUN_ACTIVE) RunLog.append(line);
         // ★ 打到「当前活着的 Activity」上。Activity 可能被重建，
         //   旧跑步线程如果往已销毁的实例上打日志，用户就"看不见"了。
         final MainActivity dst = (LIVE != null) ? LIVE : this;
+        if (dst.dead) return;              // 界面没了：日志留在 logcat 与 run.log 里
         dst.ui.post(() -> {
             if (dst.tvLog == null) return;
             dst.logBuf.append(line).append('\n');
@@ -3143,9 +3349,34 @@ public class MainActivity extends Activity implements Ledao.Log {
         });
     }
 
+    /** ★ v1.0.25：上一次刷后台通知的时间（节流用，见 {@link #onTick}） */
+    private volatile long notiAt = 0;
+
+    /**
+     * ★★★ v1.0.25（docs/59）：每一拍把进度写进那条常驻通知。
+     *
+     * <p>为什么需要：跑步改成"可以息屏、可以切走"之后，那条通知就是用户唯一的
+     * 仪表盘。原来它只有一句「抓包进行中」，跑了多远、多久、打了几次卡都看不见 ——
+     * 揣兜里十几分钟，人根本没法判断"到底还在不在跑"。
+     *
+     * <p>节流到 20 秒一次：一场跑步一百来拍，每拍都刷会让通知栏一直抖，也费电。
+     * 数值口径与日志里那行心跳**完全一致**（{@code validM} 是上报里程，刷脸缺口不算）。
+     */
+    @Override
+    public void onTick(double validM, double totalM, long secs, int hit) {
+        long now = System.currentTimeMillis();
+        if (now - notiAt < 20000) return;
+        notiAt = now;
+        String txt = String.format(Locale.US,
+                "已跑 %.2f km（路线 %.2f km）· %d 分 %02d 秒 · 已打卡 %d 次",
+                validM / 1000.0, totalM / 1000.0, secs / 60, secs % 60, hit);
+        SniffGuard.setText(this, txt);
+        // 顺手也写进界面顶上那条状态栏：用户切回来第一眼就是它
+        setStatus("🏃 " + txt + "（后台运行中，别从最近任务里划掉）");
+    }
+
     /** 把标题栏文案收敛到一处 —— 打卡点数、进度都从当前状态取，避免互相覆盖 */
-    private void refreshRouteHead() {
-        if (tvRouteHead == null) return;
+    private void refreshRouteHead() {        if (tvRouteHead == null) return;
         StringBuilder sb = new StringBuilder();
         sb.append(routeOpen ? "▼ " : "▶ ")
           .append("跑步路线（点击").append(routeOpen ? "收起" : "展开").append("）");
@@ -3221,6 +3452,7 @@ public class MainActivity extends Activity implements Ledao.Log {
      *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest notify
      *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest devnote
      *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest face
+     *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest background
      * </pre>
      *
      * <ul>
@@ -3239,10 +3471,49 @@ public class MainActivity extends Activity implements Ledao.Log {
      *       {@code bg} 会**当场画一张黑白棋盘图**存成 files/bgtest.png 并铺成背景，
      *       透过去多少一眼就能看出来；{@code bgclear} 恢复纯色主题。
      *       用棋盘而不是随便找张照片，是为了不把用户自己的照片扯进来。</li>
+     *   <li>{@code background} —— ★ v1.0.25（docs/59）后台运行那四件事：
+     *       ① 电池优化白名单 ② PARTIAL_WAKE_LOCK ③ 前台服务 ④ 日志落盘。
+     *       唤醒锁故意持 10 秒，好让人在电脑上用 {@code dumpsys power} 抓到它；
+     *       同样**不联网、不跑步、不碰用户数据**。</li>
      * </ul>
      */
     private void runSelfTest(String kind) {
         if (isFinishing()) return;
+        if ("background".equals(kind)) {
+            /* ★★★ v1.0.25（docs/59）：后台运行这条路单独体检 —— 不联网、不跑步、
+             *   不碰用户数据。四件事：白名单 / 唤醒锁 / 日志落盘 / 前台服务通知。
+             *   唤醒锁故意持 10 秒，好让人在电脑上 `dumpsys power` 抓到它。 */
+            log("[自检] 后台运行自检开始（10 秒后自动释放唤醒锁）");
+            log("[自检] ①电池优化白名单：" + (ignoringBatteryOpt()
+                    ? "已在 ✅（MIUI 的「省电策略」还要单独设成无限制）"
+                    : "不在 ❌ —— 点首页「🔋 后台运行设置」申请"));
+            try {
+                if (!SniffGuard.alive) SniffGuard.start(this);
+                SniffGuard.runMode = true;
+                SniffGuard.holdAwake(this, 60L * 1000);
+                log("[自检] ②唤醒锁 PARTIAL_WAKE_LOCK："
+                        + (SniffGuard.awake() ? "已持有 ✅（tag=ledao:run）" : "拿不到 ❌"));
+                log("[自检] ③前台服务：" + (SniffGuard.alive ? "在跑 ✅" : "没起来 ❌")
+                        + "（常驻通知 id=" + SniffGuard.NOTI_ID + "）");
+                RunLog.start(getFilesDir(), "[自检] background " + new java.util.Date());
+                RunLog.append("[自检] 这一行应该能在 files/run.log 里看到");
+                log("[自检] ④运行日志落盘：" + (RunLog.active() ? "可写 ✅" : "写不了 ❌")
+                        + "  " + new File(getFilesDir(), RunLog.NAME).getAbsolutePath());
+                SniffGuard.setText(this, "自检：后台运行这一路通了（10 秒）");
+            } catch (Throwable t) {
+                log("[自检] 后台这四件事里出错：" + Err.one(t));
+            }
+            ui.postDelayed(() -> {
+                SniffGuard.dropAwake();
+                RunLog.stop();
+                SniffGuard.runMode = false;
+                SniffGuard.setText(MainActivity.this, null);
+                log("[自检] 释放唤醒锁：" + (SniffGuard.awake() ? "还持有 ❌" : "已释放 ✅"));
+                log("[自检] 结论：后台运行这条路由 ①白名单 ②唤醒锁 ③前台服务 ④日志落盘 四段组成 ——"
+                        + "上面四行全 ✅ 才算通。跑步时它们会在开跑那一瞬间自动挂上，收尾自动放开。");
+            }, 10000);
+            return;
+        }
         if ("devnote".equals(kind)) {
             // 留言弹窗平时勾了「不再弹出」就看不到了，自检里强制看一次
             DevNote.show(this, null);

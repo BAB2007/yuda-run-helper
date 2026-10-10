@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.ledao.tester"
-    android:versionCode="124"
-    android:versionName="1.0.24(测试版)">
+    android:versionCode="125"
+    android:versionName="1.0.25(测试版)">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -23,6 +23,10 @@
          授权框；Android 15 以后这条例外没了，所以 MainActivity 还会显式申请一次
          （askNotifyPermission）。这条权限被拒**不影响跑步**，只是后台不再提醒。 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- ★ v1.0.25：后台运行。申请"电池优化白名单"用（首页那行「🔋 后台运行设置」）。
+         MIUI 上真正管用的是它自己的「省电策略 → 无限制」，这里申请的是 AOSP 那一层；
+         两个都放开，息屏 / 切走之后才不会被清掉。见 docs/59。 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="28" />
 
