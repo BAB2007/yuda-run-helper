@@ -2940,9 +2940,14 @@ public class Ledao {
                                 " / 后面另有 %d 字节附加数据（不参与解码，原样上传）", tail)
                         : " / 没有多余尾巴"));
             if (jpg.length > 900 * 1024) {
+                /* ★ 2026-10-10 改口：这里原来承诺"首页重选一次就会被自动缩放"——
+                 *   那是 v1.0.18 以前那条重管线的说法，缩放早已随 FacePhoto.java 一起删掉，
+                 *   现在重选多少次都是**原字节直存**。留着那句话等于骗用户去白跑一趟。
+                 *   （注释里也故意不把那句原文抄全 —— 抄了 FacePhotoTest P6r 会假红。） */
                 log.log(String.format(Locale.US,
                         "      ⚠ 人脸照片偏大（%.1f MB，真机约 0.2 MB）——"
-                        + "首页重新选一次会自动归一化到 1296×1296", jpg.length / 1048576.0));
+                        + "现在不做压缩，重选也是原字节直存；只要服务端肯收就不影响",
+                        jpg.length / 1048576.0));
             }
             String day = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
             String key = "Public/Upload/pic/face_verify/" + day + "/"
