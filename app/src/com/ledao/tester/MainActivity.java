@@ -917,6 +917,10 @@ public class MainActivity extends Activity implements Ledao.Log {
         //   和启动时那个留言弹窗**共用同一份**（DevNote.copyRow），两处永远一致 ——
         //   很多用户第一次就把弹窗勾成「不再弹出」，之后只能从侧边栏找。
         drawerPanel.addView(DevNote.copyRow(this));
+        // ★ 2026-10-10 用户第 6 条：侧边栏**最后**放煮波的收款码（一句话 + 图）。
+        //   只放这儿、不放启动弹窗 —— 那边首次要停够 30 秒，小屏再加一张 230dp 的图
+        //   会把「关闭」挤出屏幕。文案与文件名都在 DevNote 里，测试盯着那一处。
+        drawerPanel.addView(DevNote.tipBlock(this));
 
         FrameLayout.LayoutParams dlp = new FrameLayout.LayoutParams(
                 drawerW, ViewGroup.LayoutParams.MATCH_PARENT);

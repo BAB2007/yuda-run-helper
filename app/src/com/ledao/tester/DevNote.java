@@ -331,4 +331,76 @@ public final class DevNote {
     }
 
     private static volatile boolean showing = false;
+
+    // ==================================================================
+    //  ★ 2026-10-10 用户第 6 条：侧边栏最后的收款码
+    // ==================================================================
+
+    /** 收款码旁边那句话 —— 用户原话照抄，一个字都不改（也不加 markdown 星号） */
+    public static final String TIP_TEXT =
+            "软件制作不易，不强制收费，允许白嫖，但也不拒绝打赏，回回血[doge]";
+
+    /**
+     * 收款码图片：`assets/pay_qr.png`。
+     *
+     * 这张图是从用户发来的支付宝收款海报里**只裁剪、不缩放**抠出来的
+     * （`work/cut_payqr.py`，卡片 654×736）—— 二维码的模块还是原像素，
+     * 一个模块 13 px，屏幕上放大一点也不影响扫。
+     */
+    public static final String TIP_QR = "pay_qr.png";
+
+    /**
+     * 「打赏」那一块：一句话 + 收款码。挂在侧边栏「💬 开发者留言」的**最后**。
+     *
+     * <p>为什么只放侧边栏、不放启动弹窗：弹窗那边首次要停够 30 秒才能关，
+     * 小屏手机上再加一张 230dp 的图，会把「关闭」和四个复制键挤出屏幕
+     * （弹窗正文的高度是算过的，见 {@link #show}）。
+     *
+     * <p>图片读不出来（assets 缺了 / 解码失败）就只留那句话 —— 侧边栏不能因此
+     * 空一块，更不能崩。
+     */
+    public static View tipBlock(final Activity act) {
+        float d = act.getResources().getDisplayMetrics().density;
+        int fg = AppPrefs.fg(act);
+        LinearLayout box = new LinearLayout(act);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(0, (int) (12 * d), 0, 0);
+
+        TextView t = new TextView(act);
+        t.setText(TIP_TEXT);
+        t.setTextSize(12.5f);
+        t.setTextColor(fg);
+        t.setLineSpacing(3 * d, 1.15f);
+        box.addView(t);
+
+        try {
+            java.io.InputStream in = act.getAssets().open(TIP_QR);
+            android.graphics.Bitmap bm = android.graphics.BitmapFactory.decodeStream(in);
+            in.close();
+            if (bm == null) return box;
+            android.widget.ImageView iv = new android.widget.ImageView(act);
+            iv.setImageBitmap(bm);
+            iv.setAdjustViewBounds(true);
+            iv.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+            /* 侧边栏面板的内容宽 = 280dp − 左右各 13dp = 254dp；给 230dp 留点富余。
+             * 用 dp 不用"铺满"：低密度屏上铺满会把这图放大到糊。 */
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    (int) (230 * d), ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.gravity = Gravity.CENTER_HORIZONTAL;
+            lp.setMargins(0, (int) (8 * d), 0, 0);
+            box.addView(iv, lp);
+
+            TextView hint = new TextView(act);
+            hint.setText("支付宝扫这个码就行（另一个手机扫、或者截图下来扫都可以）；"
+                    + "不扫也完全没关系，功能一个不少。");
+            hint.setTextSize(11.5f);
+            hint.setTextColor(AppPrefs.alpha(fg, 0.75f));
+            hint.setGravity(Gravity.CENTER_HORIZONTAL);
+            hint.setPadding(0, (int) (6 * d), 0, 0);
+            box.addView(hint);
+        } catch (Throwable ignore) {
+            // 图没了就只剩那句话 —— 不吵用户，也不留空白框
+        }
+        return box;
+    }
 }
