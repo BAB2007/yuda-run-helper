@@ -3457,6 +3457,7 @@ public class MainActivity extends Activity implements Ledao.Log {
      *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest devnote
      *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest face
      *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest background
+     *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest pay
      * </pre>
      *
      * <ul>
@@ -3478,7 +3479,12 @@ public class MainActivity extends Activity implements Ledao.Log {
      *   <li>{@code background} —— ★ v1.0.25（docs/59）后台运行那四件事：
      *       ① 电池优化白名单 ② PARTIAL_WAKE_LOCK ③ 前台服务 ④ 日志落盘。
      *       唤醒锁故意持 10 秒，好让人在电脑上用 {@code dumpsys power} 抓到它；
-     *       同样**不联网、不跑步、不碰用户数据**。</li>
+     *       同样**不联网、不跑步、不碰用户数据**。
+     *       ⚠ v1.0.28：③ 是**轮询最多 3 秒**才报的 —— {@code startService} 是异步的，
+     *       紧接着查必然 false，2026-10-10 在 MI 8 上就是这么误报了一次。</li>
+     *   <li>{@code pay} —— ★ v1.0.28 侧边栏那块收款码：那句话 + 图片能不能从
+     *       assets 解出来 + 整块建不建得起来。**不联网、不弹窗、不碰用户数据**；
+     *       加它是因为侧边栏要手点 ☰ 才看得到，而手机上不给发点击事件。</li>
      * </ul>
      */
     private void runSelfTest(String kind) {
@@ -3497,13 +3503,33 @@ public class MainActivity extends Activity implements Ledao.Log {
                 SniffGuard.holdAwake(this, 60L * 1000);
                 log("[自检] ②唤醒锁 PARTIAL_WAKE_LOCK："
                         + (SniffGuard.awake() ? "已持有 ✅（tag=ledao:run）" : "拿不到 ❌"));
-                log("[自检] ③前台服务：" + (SniffGuard.alive ? "在跑 ✅" : "没起来 ❌")
-                        + "（常驻通知 id=" + SniffGuard.NOTI_ID + "）");
-                RunLog.start(getFilesDir(), "[自检] background " + new java.util.Date());
-                RunLog.append("[自检] 这一行应该能在 files/run.log 里看到");
-                log("[自检] ④运行日志落盘：" + (RunLog.active() ? "可写 ✅" : "写不了 ❌")
-                        + "  " + new File(getFilesDir(), RunLog.NAME).getAbsolutePath());
+                /* ★★★ v1.0.28：③**不能接着就报** —— 2026-10-10 在 MI 8 上真踩到：
+                 *   `SniffGuard.start()` 是异步的（startService 之后 onCreate 才跑），
+                 *   紧接着查 `alive` 必然是 false → 日志里写「前台服务：没起来 ❌」，
+                 *   可 4 秒后 `dumpsys activity services` 明明显示 isForeground=true。
+                 *   一个会撒谎的体检比没有体检更坏（用户会去查一个不存在的问题），
+                 *   所以改成**轮询最多 3 秒**，并把它等了多久一起报出来。 */
                 SniffGuard.setText(this, "自检：后台运行这一路通了（10 秒）");
+                final long svcT0 = System.currentTimeMillis();
+                new Thread(() -> {
+                    try {
+                        while (!SniffGuard.alive
+                                && System.currentTimeMillis() - svcT0 < 3000) {
+                            Thread.sleep(200);
+                        }
+                        long ms = System.currentTimeMillis() - svcT0;
+                        log("[自检] ③前台服务：" + (SniffGuard.alive
+                                ? "在跑 ✅（等了 " + ms + " ms 才起来，属正常）"
+                                : "3 秒了还没起来 ❌（常驻通知 id=" + SniffGuard.NOTI_ID
+                                        + "；多半是被系统的后台限制拦了）"));
+                        RunLog.start(getFilesDir(), "[自检] background " + new java.util.Date());
+                        RunLog.append("[自检] 这一行应该能在 files/run.log 里看到");
+                        log("[自检] ④运行日志落盘：" + (RunLog.active() ? "可写 ✅" : "写不了 ❌")
+                                + "  " + new File(getFilesDir(), RunLog.NAME).getAbsolutePath());
+                    } catch (Throwable t) {
+                        log("[自检] ③④这两步出错：" + Err.one(t));
+                    }
+                }, "selftest-bg").start();
             } catch (Throwable t) {
                 log("[自检] 后台这四件事里出错：" + Err.one(t));
             }
@@ -3516,6 +3542,31 @@ public class MainActivity extends Activity implements Ledao.Log {
                 log("[自检] 结论：后台运行这条路由 ①白名单 ②唤醒锁 ③前台服务 ④日志落盘 四段组成 ——"
                         + "上面四行全 ✅ 才算通。跑步时它们会在开跑那一瞬间自动挂上，收尾自动放开。");
             }, 10000);
+            return;
+        }
+        if ("pay".equals(kind)) {
+            /* ★★★ v1.0.28：侧边栏那块收款码的体检 —— 不联网、不弹窗、不碰用户数据，
+             *   只从 assets 里解一次图。加它的原因很实在：这块只在**侧边栏**里出现，
+             *   而侧边栏要靠手点一下 ☰ 才打得开；手机上不让发点击事件（那台机在用），
+             *   于是"图到底能不能解出来"就没人能替用户确认。这里绕过界面直接验。 */
+            log("[自检] 收款码（侧边栏「💬 开发者留言」最下面那一块）");
+            try {
+                log("[自检] ①那句话：" + DevNote.TIP_TEXT);
+                android.graphics.Bitmap bm;
+                try (java.io.InputStream in = getAssets().open(DevNote.TIP_QR)) {
+                    bm = android.graphics.BitmapFactory.decodeStream(in);
+                }
+                log("[自检] ②图片 assets/" + DevNote.TIP_QR + "："
+                        + (bm == null ? "解不出来 ❌（装机包里那张图坏了）"
+                                : "解码成功 ✅ " + bm.getWidth() + "×" + bm.getHeight()));
+                android.view.View blk = DevNote.tipBlock(this);
+                int kids = (blk instanceof android.view.ViewGroup)
+                        ? ((android.view.ViewGroup) blk).getChildCount() : -1;
+                log("[自检] ③那一块建起来了：" + kids + " 个子视图（文案 + 图 + 一行小字）"
+                        + "，点左上角 ☰ 拉到最下面就能看到");
+            } catch (Throwable t) {
+                log("[自检] 收款码这块出错：" + Err.one(t));
+            }
             return;
         }
         if ("devnote".equals(kind)) {

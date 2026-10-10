@@ -62,7 +62,7 @@ def run(cmd, desc, check=True):
 
 def main():
     print("=" * 70)
-    print("构建 宇达步道乐跑助手 v1.0.27(测试版) APK")
+    print("构建 宇达步道乐跑助手 v1.0.28(测试版) APK")
     print("=" * 70)
     print("源目录 : %s" % SRC_APP)
     print("构建目录: %s   (纯英文，规避 aapt2 中文路径问题)" % BUILD)
@@ -104,7 +104,7 @@ def main():
            "--java", os.path.join(BUILD, "gen"),
            "--min-sdk-version", "21",
            "--target-sdk-version", "28",
-           "--version-code", "127", "--version-name", "1.0.27(测试版)"]
+           "--version-code", "128", "--version-name", "1.0.28(测试版)"]
     # ★ 必须显式指定 assets 目录，否则证书等资源不会被打进 APK
     assets = os.path.join(APP, "assets")
     if os.path.isdir(assets):
