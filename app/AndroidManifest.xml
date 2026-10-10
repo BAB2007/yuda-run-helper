@@ -1,12 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.ledao.tester"
-    android:versionCode="129"
-    android:versionName="1.0.29(测试版)">
+    android:versionCode="130"
+    android:versionName="1.0.30(测试版)">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- ★ v1.0.30（docs/62）：前台服务**类型**对应的权限。
+         服务是 android:foregroundServiceType="dataSync"，startForeground 也带
+         FOREGROUND_SERVICE_TYPE_DATA_SYNC。本 App 的 targetSdk 还是 28，
+         Android 14+ 只对高 targetSdk 强制要求；但国产 ROM 自己的省电策略会看
+         这个类型，而且哪天抬 targetSdk 就必须有 —— 一次配齐。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- 跑步前把后台的步道乐跑进程干掉。
          否则它会在跑步中途自己刷新令牌（单会话），把我们的令牌顶掉 →
@@ -57,10 +63,12 @@
             </intent-filter>
         </activity>
 
-        <!-- 抓包守护：跑步期间保证进程不被后台清理杀掉 -->
+        <!-- 抓包守护：跑步期间保证进程不被后台清理杀掉。
+             ★ v1.0.30：补上 foregroundServiceType（与 startForeground 传的类型一致） -->
         <service
             android:name=".SniffGuard"
             android:exported="false"
+            android:foregroundServiceType="dataSync"
             android:stopWithTask="false" />
 
         <!-- VPN 抓包通道（Android 10+）：不用改系统代理，也不需要 adb 授权。

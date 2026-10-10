@@ -290,6 +290,7 @@ public class MainActivity extends Activity implements Ledao.Log {
         if (RUN_ACTIVE) setRunBtn(true);
         updateFaceBtn();          // 人脸照片按钮状态（docs/28）
         updateBgBtn();            // ★ v1.0.25：后台运行白名单状态（docs/59）
+        showBgProbeResultIfAny();  // ★ v1.0.30：后台体检有结论了就把结论给用户（docs/62）
         restoreRunLog();          // ★ v1.0.25：把上一次（或被系统杀掉那次）的日志从磁盘捞回来
         /* ★ v1.0.25：如果本进程里跑步还在跑（用户把界面划掉又打开），
          *   把通知里的进度接着刷起来 —— notiAt 归零，下一拍就会刷一次。 */
@@ -1180,14 +1181,15 @@ public class MainActivity extends Activity implements Ledao.Log {
      * 「🔋 后台运行设置」那一行的文案 —— 顺便当状态显示。
      *
      * <p>进没进"电池优化白名单"一眼可见；没进就提示点一下申请。
-     * MIUI 那套「省电策略 / 自启动」读不出来（不是公开 API），只能写在日志里引导。
+     * 国产 ROM 那套「省电策略 / 自启动 / 后台运行」读不出来（不是公开 API），
+     * 但 v1.0.30 起向导里能**一键跳到那台机器自己的那个页面**（docs/62）。
      */
     private void updateBgBtn() {
         if (btnBg == null) return;
         boolean ign = ignoringBatteryOpt();
         btnBg.setText(ign
-                ? "🔋 后台运行：已加白名单（息屏 / 切走都能跑）"
-                : "🔋 后台运行：还没加白名单 —— 点这里申请（息屏 / 切走后不被清）");
+                ? "🔋 后台运行：白名单已加 ✅（点这里做后台体检 / 系统自启动设置）"
+                : "🔋 后台运行：白名单还没加 —— 点这里设置（不然切走会被系统冻住）");
     }
 
     /** 现在是否已经在"电池优化白名单"里（拿不到就当作没有，反正点了会走兜底） */
@@ -1201,25 +1203,207 @@ public class MainActivity extends Activity implements Ledao.Log {
         }
     }
 
+    // ==================================================================
+    //  ★★★ v1.0.30（docs/62）：后台运行向导 + 后台体检
+    //
+    //  起因（用户 2026-10-10 报的）：「切到别的 app 后跑步就停了，只有屏幕在
+    //  助手才能跑」，用的是荣耀 X80、白名单还没加。查下来机理很清楚：
+    //  前台服务活着、常驻通知还挂着（所以看着像在跑），但**整进程被系统冻住**，
+    //  一条指令都不执行 —— 日志里那段时间就是空白。
+    //
+    //  原来那行「🔋 后台运行设置」只有一个 AOSP 白名单弹窗，而荣耀/华为/小米
+    //  真正管用的是它们**自己**的「应用启动管理 / 自启动 / 后台运行」，
+    //  那个只能用户手点。所以这里做三件事：
+    //    ① 状态说清楚（白名单 / 前台服务 / 唤醒锁 / 机型）；
+    //    ② 一键跳到这台机器自己的那个页面（各家组件名不一样，逐个试）；
+    //    ③ **后台体检**：切走 90 秒，回来直接告诉你系统有没有把助手冻住 ——
+    //       把"到底有没有放开后台"从猜测变成可测的数（用户和开发者都能看）。
+    // ==================================================================
+
+    /** 体检时长（秒）。90 秒足够跨过大多数 ROM 的"切后台 N 秒后冻结"阈值 */
+    private static final int BG_PROBE_SEC = 90;
+
+    private static volatile long bgProbeStartWall = 0;
+    private static volatile long bgProbeFrozenMs = 0;
+    private static volatile int bgProbeFreezeTimes = 0;
+    private static volatile long bgProbeMaxFreezeMs = 0;
+    private static volatile boolean bgProbeRunning = false;
+    private static volatile String bgProbeReport = null;
+    private static volatile boolean bgProbeShown = true;   // 结果弹过一次就不反复弹
+
+    /** 当前后台状态那几行（向导、日志、自检共用同一份口径） */
+    private String bgStateText() {
+        StringBuilder sb = new StringBuilder();
+        sb.append(ignoringBatteryOpt()
+                ? "· 系统电池优化白名单：已加 ✅\n"
+                : "· 系统电池优化白名单：还没加 ❌（点上面第 ① 个按钮）\n");
+        sb.append(SniffGuard.alive
+                ? "· 前台服务：在跑 ✅（通知栏那条常驻通知就是它）\n"
+                : "· 前台服务：现在没起（跑步时会自动起）\n");
+        sb.append(SniffGuard.awake()
+                ? "· 唤醒锁：已持有 ✅（息屏后节拍不会被拉长）\n"
+                : "· 唤醒锁：现在没持（跑步时会自动持）\n");
+        sb.append("· 这台机器：").append(android.os.Build.MANUFACTURER).append(' ')
+          .append(android.os.Build.MODEL).append(" / Android ")
+          .append(android.os.Build.VERSION.RELEASE).append('\n');
+        sb.append("· 它的自启动页：").append(romPageName() == null
+                ? "没找到专用入口（会退到「应用详情」页）" : romPageName());
+        return sb.toString();
+    }
+
     /**
-     * ★★★ v1.0.25：申请"后台运行"（docs/59）。
+     * 这台机器的「自启动 / 后台运行」页叫什么（只影响按钮文案，能跳才算数）。
      *
-     * <p>两层，缺一层都可能被清掉：
-     * <ol>
-     *   <li><b>AOSP 电池优化</b>：这个能直接用系统弹窗申请
-     *       （{@code ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS}），点「允许」即可；</li>
-     *   <li><b>MIUI 的省电策略 / 自启动</b>：不是公开 API，申请不了 ——
-     *       所以这里把路径写清楚，让用户自己点两下（设置 → 应用 → 跑步测试助手）。</li>
-     * </ol>
+     * <p>组件名是从各家 ROM 长期稳定沿用下来的（荣耀/华为 systemmanager、
+     * 小米 securitycenter、OPPO safecenter、vivo permissionmanager）；
+     * 跳之前还会用 {@code resolveActivity} 探一次，探不到就换下一个、最后退到
+     * 系统「应用详情」页 —— 那一页每个 ROM 都有，用户自己在里面翻。
+     */
+    private String romPageName() {
+        String m = android.os.Build.MANUFACTURER == null ? ""
+                : android.os.Build.MANUFACTURER.toUpperCase(Locale.US);
+        if (m.contains("HONOR")) return "应用启动管理（荣耀：应用 → 应用启动管理）";
+        if (m.contains("HUAWEI")) return "应用启动管理（华为：应用 → 应用启动管理）";
+        if (m.contains("XIAOMI") || m.contains("REDMI") || m.contains("POCO"))
+            return "自启动管理（小米：应用设置 → 授权管理 → 自启动）";
+        if (m.contains("OPPO") || m.contains("REALME") || m.contains("ONEPLUS")
+                || m.contains("ONEPLUS"))
+            return "自启动管理（OPPO/一加：手机管家 → 权限隐私 → 自启动）";
+        if (m.contains("VIVO") || m.contains("IQOO"))
+            return "自启动（vivo/iQOO：i 管家 → 应用管理 → 权限管理 → 自启动）";
+        if (m.contains("MEIZU")) return "后台管理（魅族：手机管家 → 权限管理 → 后台管理）";
+        if (m.contains("SAMSUNG")) return "电池 → 后台使用限制（三星）";
+        return null;
+    }
+
+    /**
+     * 打开这台机器自己的「自启动 / 后台运行」页。
+     *
+     * <p>逐条试，全都不认就退到系统「应用详情」页（{@code ACTION_APPLICATION_DETAILS_SETTINGS}），
+     * 至少把用户送到能翻到那一项的地方。
+     *
+     * @return 打开成功返回那一页的名字，全失败返回 null
+     */
+    private String openRomBackgroundPage() {
+        String[][] tries = {
+            // 荣耀 / 华为：应用启动管理（自启动 + 关联启动 + 后台活动 三个开关都在这一页）
+            {"com.hihonor.systemmanager", "com.hihonor.systemmanager.startupmgr.ui.StartupNormalAppListActivity"},
+            {"com.hihonor.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"},
+            {"com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"},
+            // 小米 / 红米：自启动管理
+            {"com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity"},
+            // OPPO / 一加 / realme
+            {"com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity"},
+            {"com.oplus.safecenter", "com.oplus.safecenter.startupapp.StartupAppListActivity"},
+            // vivo / iQOO
+            {"com.vivo.permissionmanager", "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"},
+            {"com.iqoo.secure", "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity"},
+            // 魅族
+            {"com.meizu.safe", "com.meizu.safe.permission.SmartBGActivity"},
+        };
+        for (String[] c : tries) {
+            try {
+                Intent i = new Intent();
+                i.setComponent(new android.content.ComponentName(c[0], c[1]));
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                if (getPackageManager().resolveActivity(i, 0) == null) continue;
+                startActivity(i);
+                log("[后台] 已打开系统页面：" + c[0] + "/" + c[1]);
+                return romPageName() != null ? romPageName() : (c[0] + " 的自启动页");
+            } catch (Throwable ignore) {
+                /* 试下一个 */
+            }
+        }
+        try {
+            Intent i = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            i.setData(Uri.parse("package:" + getPackageName()));
+            startActivity(i);
+            log("[后台] 这台机器没认出自启动页，已打开「应用详情」页 ——"
+                    + "在里面找「自启动 / 后台运行 / 省电策略 / 电池」，全部放开。");
+            return "应用详情页";
+        } catch (Throwable t) {
+            logFail("打开应用详情页", t);
+            return null;
+        }
+    }
+
+    /**
+     * ★★★ v1.0.30：「🔋 后台运行设置」点开的东西 —— 一个向导，不再是一个弹窗。
      */
     private void askBackgroundPermission() {
+        try {
+            LinearLayout box = new LinearLayout(this);
+            box.setOrientation(LinearLayout.VERTICAL);
+
+            /* ★ 顺序有讲究：**先按钮、后状态**。
+             *   2026-10-11 装机第一版是反过来的（五行状态在最上面），MI 8 上
+             *   一屏只装得下 ①②，③④ 被切在下面（uiautomator dump 里
+             *   ③ 的高度只剩 44px、④ 干脆没排上）—— 用户根本不知道下面还有东西。
+             *   现在：动作先给，状态文本挪到最后当"详情"，小屏上也点得到。 */
+            Button b1 = new Button(this);
+            b1.setText("① 让系统别省我：申请「电池优化白名单」");
+            b1.setOnClickListener(v -> askIgnoreBatteryOpt());
+            box.addView(b1);
+
+            Button b2 = new Button(this);
+            b2.setText("② 打开系统的「自启动 / 后台活动」页（最关键的一层）");
+            b2.setOnClickListener(v -> {
+                String p = openRomBackgroundPage();
+                log(p == null ? "[后台] 没打开任何系统页面" : "[后台] 打开的是：" + p);
+                Toast.makeText(this, "把助手的「自启动 / 后台活动」全部打开，再回来做一次体检",
+                        Toast.LENGTH_LONG).show();
+            });
+            box.addView(b2);
+
+            Button b3 = new Button(this);
+            b3.setText("③ 后台体检：切走 " + BG_PROBE_SEC + " 秒，回来看后台通不通");
+            b3.setOnClickListener(v -> startBgProbe());
+            box.addView(b3);
+
+            Button b4 = new Button(this);
+            b4.setText("④ 把下面的状态写进日志（再点「📋 复制日志」发我）");
+            b4.setOnClickListener(v -> {
+                log("[后台] ── 状态快照 ──");
+                for (String ln : bgStateText().split("\n")) log("   " + ln);
+                log("   白名单=" + (ignoringBatteryOpt() ? "已加" : "没加")
+                        + "  前台服务=" + (SniffGuard.alive ? "在跑" : "没起")
+                        + "  唤醒锁=" + (SniffGuard.awake() ? "已持有" : "没持"));
+                Toast.makeText(this, "已写进日志", Toast.LENGTH_SHORT).show();
+            });
+            box.addView(b4);
+
+            TextView st = new TextView(this);
+            st.setTextSize(12.5f);
+            st.setLineSpacing(dp(3), 1.15f);
+            st.setPadding(dp(2), dp(10), dp(2), dp(2));
+            st.setText("—— 现在的状态 ——\n" + bgStateText());
+            box.addView(st);
+
+            /* 内容比一屏高时必须能滚，而且**高度要自己框住**（AlertDialog 不会）。
+             * 取屏高 72% 与 470dp 的较小值：①②③ 一定在第一屏里。 */
+            android.widget.ScrollView sc = new android.widget.ScrollView(this);
+            sc.addView(box);
+            int maxH = (int) (getResources().getDisplayMetrics().heightPixels * 0.72);
+            sc.setLayoutParams(new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, Math.min(maxH, dp(470))));
+
+            android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(this)
+                    .setTitle("🔋 后台运行向导")
+                    .setView(sc)
+                    .setNegativeButton("关闭", null)
+                    .create();
+            dlg.show();
+        } catch (Throwable t) {
+            logFail("打开后台运行向导", t);
+        }
+    }
+
+    /** ① 那一步：AOSP 那层白名单（国产 ROM 还会再拦一层，所以②也要做） */
+    private void askIgnoreBatteryOpt() {
         boolean ign = ignoringBatteryOpt();
         log(ign ? "[后台] 电池优化白名单：已经在里面 ✅" : "[后台] 电池优化白名单：还没进 —— 现在申请");
-        log("   MIUI 上还有一层，不管上面那步成不成都要做：设置 → 应用 → 管理应用 →"
-                + " 跑步测试助手 → 省电策略选「无限制」，并把「自启动」打开；"
-                + "最近任务里给它下拉加个锁更稳。");
         if (ign) {
-            Toast.makeText(this, "已经在白名单里了；MIUI 的「省电策略」也记得设成无限制",
+            Toast.makeText(this, "已经在白名单里了；②那层（系统自启动/后台活动）也别忘了",
                     Toast.LENGTH_LONG).show();
             return;
         }
@@ -1238,6 +1422,112 @@ public class MainActivity extends Activity implements Ledao.Log {
             } catch (Throwable t2) {
                 logFail("打开电池优化设置", t2);
             }
+        }
+    }
+
+    /**
+     * ★★★ v1.0.30：**后台体检** —— 用 90 秒把"系统有没有冻住助手"量出来。
+     *
+     * <p>原理很朴素：起一根后台线程，每睡 1 秒醒一次；醒来发现"这一觉睡了
+     * 远不止 1 秒"，那多出来的时间就是**没被调度**的时间（被冻住了）。
+     * 90 秒里真正被调度了多久，直接就是"后台通不通"的答案：
+     * <ul>
+     *   <li>≥ 80%：通 ✅ —— 切走、息屏都能接着跑；</li>
+     *   <li>40% ~ 80%：断断续续 ⚠ —— 跑得完，但会被冻几段（用时会被自动剔除，配速不受影响）；</li>
+     *   <li>&lt; 40%：基本没跑 ❌ —— 这台机器把助手冻住了，必须去②那个页面放开。</li>
+     * </ul>
+     *
+     * <p>为什么要做它：用户报"切走就停"的时候，肉眼只能看到"日志中间是空的"，
+     * 到底是网络、是代码、还是系统，谁也说不清。有了这个数，
+     * 用户自己能验，开发者也不用猜（结果会写进 logcat 和日志框）。
+     */
+    private void startBgProbe() {
+        if (bgProbeRunning) {
+            Toast.makeText(this, "体检已经在跑了：再切走一会儿，回来再点这里看结果",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        bgProbeStartWall = System.currentTimeMillis();
+        bgProbeFrozenMs = 0;
+        bgProbeFreezeTimes = 0;
+        bgProbeMaxFreezeMs = 0;
+        bgProbeReport = null;
+        bgProbeShown = false;
+        bgProbeRunning = true;
+        new Thread(() -> {
+            long last = System.currentTimeMillis();
+            while (bgProbeRunning) {
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    break;
+                }
+                long now = System.currentTimeMillis();
+                long gap = now - last;
+                last = now;
+                if (gap > 2500) {
+                    long over = gap - 1000;          // 计划睡 1 秒，多出来的就是被冻掉的
+                    bgProbeFrozenMs += over;
+                    bgProbeFreezeTimes++;
+                    if (over > bgProbeMaxFreezeMs) bgProbeMaxFreezeMs = over;
+                }
+                if (now - bgProbeStartWall >= BG_PROBE_SEC * 1000L) break;
+            }
+            bgProbeRunning = false;
+            bgProbeReport = bgProbeVerdict();
+            android.util.Log.i("LedaoTester", bgProbeReport.replace("\n", " / "));
+        }, "bg-probe").start();
+        log("[体检] 后台体检开始（" + BG_PROBE_SEC + " 秒）—— 现在把助手切到后台，或者直接息屏；"
+                + "到点回来点「🔋 后台运行设置」看结论。");
+        setStatus("🔬 后台体检中：请切走 / 息屏 " + BG_PROBE_SEC + " 秒");
+    }
+
+    /** 体检结论（人话版，给用户看；界面文字不带 markdown 记号） */
+    private String bgProbeVerdict() {
+        long wall = Math.max(1, System.currentTimeMillis() - bgProbeStartWall);
+        double sec = wall / 1000.0;
+        double frozen = bgProbeFrozenMs / 1000.0;
+        double awake = Math.max(0, sec - frozen);
+        double rate = awake / sec * 100.0;
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format(Locale.US,
+                "切走 %.0f 秒：助手真正被调度了 %.1f 秒（%.0f%%）", sec, awake, rate));
+        if (bgProbeFreezeTimes > 0)
+            sb.append(String.format(Locale.US, "，被冻住 %.1f 秒（%d 段，最长 %.1f 秒）",
+                    frozen, bgProbeFreezeTimes, bgProbeMaxFreezeMs / 1000.0));
+        sb.append("。\n\n");
+        if (rate >= 80) {
+            sb.append("结论：后台是通的 ✅ 这台机器没有冻助手 —— 跑步时可以放心切走、息屏。");
+        } else if (rate >= 40) {
+            sb.append("结论：后台断断续续 ⚠ 系统把助手冻了几段。\n")
+              .append("这一场还是跑得完（被冻住的时间会自动从用时里剔除，配速不会被拖坏），\n")
+              .append("但想让后台顺畅，请点第 ② 个按钮，把助手的「自启动 / 后台活动」全部打开。");
+        } else {
+            sb.append("结论：后台基本被冻住了 ❌ 这就是「切走就停」的原因 ——\n")
+              .append("前台服务和通知都还在（所以看着像在跑），但进程被系统冻住，一条指令都不执行，\n")
+              .append("所以那段时间既没有日志、也没有里程。\n")
+              .append("请点第 ② 个按钮，在系统页面里把助手的「自启动 / 关联启动 / 后台活动」\n")
+              .append("全部打开（有的机型还要把「省电策略」设成「无限制」），回来再做一次体检。");
+        }
+        return sb.toString();
+    }
+
+    /** 回到前台时，如果体检已经有结论了，就把结论弹给用户（只弹一次） */
+    private void showBgProbeResultIfAny() {
+        if (bgProbeReport == null || bgProbeShown) return;
+        bgProbeShown = true;
+        String r = bgProbeReport;
+        log("[体检] " + r.replace("\n", " "));
+        // 状态条别再挂着"体检中" —— 结论已经在弹窗里了
+        setStatus("🔋 后台体检完成，见弹窗结论");
+        try {
+            Alerts.dialog(this, "后台体检结果", r,
+                    "① 点首页「🔋 后台运行设置」→ 第 ② 个按钮，把系统那层的"
+                  + "「自启动 / 后台活动」全部打开（不同机型叫法不同，页面已经帮你跳过去）；\n"
+                  + "② 回来再做一次体检，看到「后台是通的 ✅」就可以放心跑了。",
+                    this::copyLog);
+        } catch (Throwable t) {
+            logFail("弹后台体检结果", t);
         }
     }
 
@@ -1996,12 +2286,33 @@ public class MainActivity extends Activity implements Ledao.Log {
                 RunLog.start(getFilesDir(), String.format(Locale.US,
                         "══════ 本场开始 %s  目标 %.2f km ══════",
                         new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date()), fKm));
-                log("★ 后台运行已就绪：前台服务 + 唤醒锁（"
-                        + (SniffGuard.awake() ? "已持有 ✅" : "没拿到 ❌ 息屏后节拍可能被拉长")
-                        + "）+ 日志落盘 files/" + RunLog.NAME + "（"
+                /* ★★★ v1.0.30（docs/62）：前台服务是**异步**起的（startService →
+                 *   onCreate → onStartCommand），紧接着查 alive 必然是 false ——
+                 *   v1.0.28 的自检就在 MI 8 上这么误报过一次。这里最多等 3 秒，
+                 *   然后把"到底起没起"如实写进日志：没起来就等于没有前台保命，
+                 *   切走以后随时会被系统冻住或者清掉。 */
+                long svcT0 = System.currentTimeMillis();
+                while (!SniffGuard.alive && System.currentTimeMillis() - svcT0 < 3000) {
+                    try { Thread.sleep(200); } catch (InterruptedException ignore) { }
+                }
+                long svcMs = System.currentTimeMillis() - svcT0;
+                log("★ 后台运行已就绪：");
+                log("   · 前台服务：" + (SniffGuard.alive
+                        ? "在跑 ✅（等了 " + svcMs + " ms，异步起的属正常）"
+                        : "没起来 ❌ —— 切走以后系统随时可能冻住 / 清掉助手"));
+                log("   · 唤醒锁：" + (SniffGuard.awake()
+                        ? "已持有 ✅（息屏后节拍不会被拉长）"
+                        : "没拿到 ❌ —— 息屏后每一拍可能被拉长，配速会被拖慢"));
+                log("   · 日志落盘：files/" + RunLog.NAME + "（"
                         + (RunLog.active() ? "可写 ✅" : "写不了 ❌") + "）");
-                log("   跑步期间**可以息屏、可以切到别的应用**；唯独别从最近任务里把助手划掉 ——"
+                log("   · 白名单：" + (ignoringBatteryOpt() ? "已加 ✅" : "还没加 ❌")
+                        + "　机型 " + android.os.Build.MANUFACTURER + " "
+                        + android.os.Build.MODEL + " / Android " + android.os.Build.VERSION.RELEASE);
+                log("   跑步期间可以息屏、可以切到别的应用；唯独别从最近任务里把助手划掉 ——"
                         + "划掉只是关掉这扇窗，跑步照跑（想停就点回来按「■ 停止跑步」）。");
+                /* ★ v1.0.30：把新增的兜底说清楚 —— 系统真冻了我们，也不至于白跑一场。 */
+                log("   ★ 万一系统把助手冻住了（日志里会出现「⚠ 系统把助手冻住了 X 秒」）："
+                        + "那段时间会自动从用时里剔除，配速不会被拖坏，回来接着跑完就行。");
             } catch (Throwable t) {
                 log("⚠ 后台运行三件套没挂全（不影响跑步）：" + t);
             }
@@ -2063,6 +2374,27 @@ public class MainActivity extends Activity implements Ledao.Log {
                 if (!r.ok && !r.reported && !r.message.contains("已手动停止")) {
                     String[] a = Err.advise(r.message);
                     Alerts.error(LIVE != null ? LIVE : this, a[0], a[1], a[2], this::copyLog);
+                }
+                /* ★★★ v1.0.30（docs/62）：这一场被系统冻过 —— 必须让用户知道，
+                 *   否则他会以为"是助手自己停了"，下次还会在同一个地方栽。
+                 *   说得准确一点：用时已经把冻住的那几段剔掉了，所以这不是
+                 *   "这一场废了"，而是"这台机器没放开助手的后台"。 */
+                if (r.frozenSec >= 10) {
+                    log("★ 这一场系统冻了 " + r.frozenSec + " 秒 —— 已全部从用时里剔除，"
+                            + "配速不受影响（见上面那几行「⚠ 系统把助手冻住了」）");
+                    if (r.ok)
+                        Alerts.error(LIVE != null ? LIVE : this,
+                                "后台被系统冻住了 " + r.frozenSec + " 秒（这一场照常跑完了）",
+                                "跑步期间系统把助手整进程冻住了 " + r.frozenSec + " 秒："
+                              + "前台服务和常驻通知都还在（所以看着像在跑），"
+                              + "但那段时间一条指令都没执行 —— 既没有日志，也没有里程。\n"
+                              + "冻住的时间已经自动从「用时」里剔除，这一场的配速和记录不受影响。",
+                                "① 点首页「🔋 后台运行设置」；\n"
+                              + "② 点第 ② 个按钮，把助手的「自启动 / 关联启动 / 后台活动」"
+                              + "全部打开（不同机型叫法不同，页面会直接跳过去）；\n"
+                              + "③ 回来点第 ③ 个按钮做一次 " + BG_PROBE_SEC + " 秒后台体检，"
+                              + "看到「后台是通的 ✅」就稳了。",
+                                this::copyLog);
                 }
                 // ★ 这一局结束了 —— 清掉实跑轨迹、重新抽下一局的预览
                 //   （里程/打卡点/路线都会换新的，白框和下一次绿框仍然一致）。
@@ -3485,6 +3817,14 @@ public class MainActivity extends Activity implements Ledao.Log {
      *   <li>{@code pay} —— ★ v1.0.28 侧边栏那块收款码：那句话 + 图片能不能从
      *       assets 解出来 + 整块建不建得起来。**不联网、不弹窗、不碰用户数据**；
      *       加它是因为侧边栏要手点 ☰ 才看得到，而手机上不给发点击事件。</li>
+     *   <li>{@code bgwizard} —— ★ v1.0.30 后台运行向导那一屏（docs/62）：
+     *       把状态四行打进日志，同时把向导弹出来看排版。</li>
+     *   <li>{@code bgrom} —— ★ v1.0.30：走一遍「打开这台机器自己的自启动页」，
+     *       把最终落到哪个组件写进日志（换机型时用这个确认那串组件名还在不在）。</li>
+     *   <li>{@code bgprobe} —— ★ v1.0.30：开一次后台体检（90 秒）。
+     *       配合电脑上 {@code am start ... HOME} 把助手切到后台、90 秒后再切回来，
+     *       就能在真机上量出"这台机器到底会不会把助手冻住"。
+     *       **不联网、不跑步、不碰账号**。</li>
      * </ul>
      */
     private void runSelfTest(String kind) {
@@ -3542,6 +3882,34 @@ public class MainActivity extends Activity implements Ledao.Log {
                 log("[自检] 结论：后台运行这条路由 ①白名单 ②唤醒锁 ③前台服务 ④日志落盘 四段组成 ——"
                         + "上面四行全 ✅ 才算通。跑步时它们会在开跑那一瞬间自动挂上，收尾自动放开。");
             }, 10000);
+            return;
+        }
+        if ("bgwizard".equals(kind)) {
+            /* ★ v1.0.30（docs/62）：后台运行向导 —— 状态四行 + 四个按钮。
+             *   状态先落进日志（手机上不给点，日志是唯一能带出来的东西），
+             *   弹窗只为看排版。不联网、不跑步、不碰账号。 */
+            log("[自检] 后台运行向导 · 状态");
+            for (String ln : bgStateText().split("\n")) log("   " + ln);
+            askBackgroundPermission();
+            return;
+        }
+        if ("bgrom".equals(kind)) {
+            // ★ v1.0.30：确认这台机器上「自启动页」那串组件名还认不认
+            log("[自检] 尝试打开本机自己的「自启动 / 后台运行」页…");
+            String p = openRomBackgroundPage();
+            log("[自检] 结果：" + (p == null ? "一个都没打开 ❌" : "打开了 → " + p));
+            return;
+        }
+        if ("bgprobe".equals(kind)) {
+            /* ★ v1.0.30：后台体检（90 秒）。用法（电脑上）：
+             *   am start -n com.ledao.tester/.MainActivity --es selftest bgprobe
+             *   am start -a android.intent.action.MAIN -c android.intent.category.HOME
+             *   （等 90 秒）
+             *   am start -n com.ledao.tester/.MainActivity
+             *   然后看日志里那行「[体检] …」 */
+            log("[自检] 起一次后台体检（" + BG_PROBE_SEC + " 秒）——"
+                    + "请把助手切到后台 / 息屏，到点回来");
+            startBgProbe();
             return;
         }
         if ("pay".equals(kind)) {
@@ -3748,11 +4116,19 @@ public class MainActivity extends Activity implements Ledao.Log {
           + "【跑步期间可以走开】\n"
           + "· 切到别的 App、锁屏（息屏）、揣兜里都行 —— 跑步期间有\n"
           + "  唤醒锁，节拍不会被系统拉长（配速也就不会被拖慢）。\n"
+          + "· 但系统还有一层自己的省电策略（荣耀 / 华为 / 小米都有），\n"
+          + "  没放开时它会把助手整进程冻住：通知还挂着、看着像在跑，\n"
+          + "  其实一条指令都没执行 —— 这就是「切走就停」。\n"
+          + "  首页那行「🔋 后台运行设置」点开有三步：\n"
+          + "    ① 申请系统的电池优化白名单；\n"
+          + "    ② 打开这台机器自己的「自启动 / 后台活动」页，把助手\n"
+          + "       全部放开（小米这类还要把省电策略设成「无限制」）；\n"
+          + "    ③ 做一次 90 秒后台体检 —— 说「后台是通的」才算稳。\n"
+          + "· 没放开也能跑完：被冻住的那几段会自动从「用时」里剔除\n"
+          + "  （日志里会有「⚠ 系统把助手冻住了 X 秒」），配速不受影响。\n"
           + "· 从最近任务里把助手划掉也不会停：跑步归进程管，界面只是\n"
           + "  一扇窗。重新打开就能接管，日志会从磁盘捞回来。\n"
-          + "· 想停：回到这里点「■ 停止跑步」。划掉不算停。\n"
-          + "· 首页那行「🔋 后台运行设置」建议点一下加白名单；小米 /\n"
-          + "  华为这类还要把省电策略设成「无限制」并允许自启动。\n\n"
+          + "· 想停：回到这里点「■ 停止跑步」。划掉不算停。\n\n"
           + "【参数怎么设】\n"
           + "· 只有一个「系统自动设置」，不用选、也没有按钮。\n"
           + "  点「开始跑步」就是自动模式：\n"

@@ -68,7 +68,14 @@ public class SniffGuard extends Service {
         try {
             goForeground();
         } catch (Throwable t) {
-            // 通知失败也不能让服务崩掉
+            /* ★★★ v1.0.30（docs/62）：这里以前是**空 catch**。
+             *   前台服务没起来（少权限 / 被 ROM 拦 / 通知渠道被禁 / pass 了没声明的
+             *   FGS 类型）时外面完全不知道，用户看到的就是"通知不见了、切走就被冻" ——
+             *   而日志里一个字都没有，谁也没法查。现在至少留下可查的痕迹。 */
+            android.util.Log.e("LedaoTester", "[后台] ❌ 前台服务没起来：" + t);
+            RunLog.append("[后台] ❌ 前台服务没起来（" + t + "）—— "
+                    + "没有它，切走 / 息屏后系统随时可能把助手冻住，"
+                    + "见首页「🔋 后台运行设置」");
         }
         return START_STICKY;
     }
@@ -100,14 +107,17 @@ public class SniffGuard extends Service {
      */
     public static synchronized void holdAwake(Context c, long ms) {
         try {
+            if (c != null) ctx = c.getApplicationContext();
             if (wake == null) {
+                if (ctx == null) return;
                 android.os.PowerManager pm = (android.os.PowerManager)
-                        c.getApplicationContext().getSystemService(Context.POWER_SERVICE);
+                        ctx.getSystemService(Context.POWER_SERVICE);
                 if (pm == null) return;
                 wake = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "ledao:run");
                 wake.setReferenceCounted(false);   // 重复 acquire 不需要重复 release
             }
             if (!wake.isHeld()) wake.acquire(ms);
+            else wake.acquire(ms);                 // 已持有：这一下等于把兜底超时往后推
         } catch (Throwable ignore) {
             /* 拿不到就算了：跑步照跑，只是息屏后节拍可能被拉长 */
         }
@@ -119,6 +129,23 @@ public class SniffGuard extends Service {
             if (wake != null && wake.isHeld()) wake.release();
         } catch (Throwable ignore) { }
     }
+
+    /**
+     * ★★★ v1.0.30（docs/62）：把唤醒锁的兜底超时**往后推**。
+     *
+     * <p>{@link #holdAwake} 只 acquire 一次（45 分钟兜底）。被系统冻过的场次里，
+     * 墙上时钟会走得比模拟时长多得多（冻 20 分钟就有 20 分钟是"白等"），
+     * 45 分钟可能不够 —— 跑步循环每隔几分钟续一下，长跑/被冻久了也不会半路掉锁。
+     *
+     * <p>没持有时只是重新 acquire；已经持有时（引用计数已关）等于重设超时。
+     */
+    public static synchronized void keepAwake() {
+        if (ctx == null) return;
+        holdAwake(ctx, 45L * 60 * 1000);
+    }
+
+    /** 拿住唤醒锁时顺手记住 application context，好让 {@link #keepAwake()} 能续 */
+    private static Context ctx = null;
 
     /** 现在拿着这把锁吗（自检和日志用） */
     public static synchronized boolean awake() {
@@ -173,7 +200,25 @@ public class SniffGuard extends Service {
                 .setOnlyAlertOnce(true)
                 .setContentIntent(pi);
 
-        startForeground(NOTI_ID, b.build());
+        startForegroundCompat(b.build());
+    }
+
+    /**
+     * ★★★ v1.0.30（docs/62）：显式声明前台服务**类型**。
+     *
+     * <p>本 App 的 targetSdk 还是 28，Android 14+ 只对"高 targetSdk"强制要求类型，
+     * 所以不写也不会当场抛 —— 但国产 ROM 自己的省电策略（荣耀/华为的「应用速冻」、
+     * 小米的省电策略）会看这个类型来决定"这算不算正经前台服务"，
+     * 而且哪天把 targetSdk 抬上去就必须有。manifest 里同名声明了 dataSync
+     * （"正在同步数据"，与本服务的用途最贴切），这里传的必须和它一致。
+     */
+    private void startForegroundCompat(Notification n) {
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(NOTI_ID, n,
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+        } else {
+            startForeground(NOTI_ID, n);
+        }
     }
 
     @Override
@@ -192,7 +237,11 @@ public class SniffGuard extends Service {
             Intent i = new Intent(c, SniffGuard.class);
             if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(i);
             else c.startService(i);
-        } catch (Throwable ignore) {
+        } catch (Throwable t) {
+            /* ★ v1.0.30：以前这里也是空 catch —— 前台服务压根没起来的话，
+             *   跑步就成了"裸奔"（切走即被冻），而日志里看不出来。 */
+            android.util.Log.e("LedaoTester", "[后台] ❌ 起前台服务失败：" + t);
+            RunLog.append("[后台] ❌ 起前台服务失败（" + t + "）");
         }
     }
 

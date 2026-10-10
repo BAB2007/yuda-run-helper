@@ -1405,6 +1405,17 @@ public class Ledao {
          * 照片不行），比这里通用那把「这一场没成功」有用得多。
          */
         public boolean reported = false;
+        /**
+         * ★★★ v1.0.30（docs/62）：这一场被系统"冻住"了多少秒。
+         *
+         * <p>国产 ROM 对"没放开后台"的应用会**整进程冻结**（不是杀）：前台服务还在、
+         * 常驻通知还挂着、进程还活着，但一条指令都不执行 —— 用户看到的现象就是
+         * 「切到别的 App，跑步就停了；只有屏幕停在助手上才跑」。
+         *
+         * <p>冻住的这段时间**不算用时、也不进轨迹时间轴**（见 {@link Freeze}），
+         * 所以配速不会被拖坏。界面拿这个数决定要不要提醒用户去放开后台。
+         */
+        public int frozenSec = 0;
     }
 
     /**
@@ -1884,6 +1895,11 @@ public class Ledao {
             double validM = 0;                // 有效里程（m）—— 唯一会被上报的那个数
             double elapsedSec = 0;                        // 已跑时长（速度按时间推进）
             int slowTicks = 0;                // ★ v1.0.25：这一场"被拖长"的拍数（后台被限制的信号）
+            /* ★★★ v1.0.30（docs/62）：这一场"被系统冻住"的时间账本。
+             *   slowTicks 管的是"这一拍算得慢"（网络慢 / 系统卡一下），
+             *   这里管的是**整段时间根本没被调度**（进程被冻住）。
+             *   两个一起看就能分清"后台被限制了"还是"网络不好"。 */
+            final Freeze fz = new Freeze();
             // 预计总时长：用区间中值速度估，只用于「收尾减速段」的定位
             double totalTSec = rp.length / Math.max(0.5, vMid);
             int n = (int) (totalTSec / intervalSec) + 4;
@@ -2077,6 +2093,14 @@ public class Ledao {
 
             for (int i = 0; i < n && !stopped; i++) {
                 long tickStart = System.currentTimeMillis();
+                /* ★★★ v1.0.30（docs/62）：两个时钟，别混用。
+                 *   tickStart —— **真实墙上时钟**，只用来量"这一拍花了多久"（slowTicks）；
+                 *   vTick     —— **虚拟时钟**，写进轨迹时间轴的那个时刻：等于
+                 *                真实时刻 − 系统到目前冻掉的时间。
+                 *   冻住的时段在虚拟时间轴上是"不存在"的 —— 这样轨迹读出来是连续的，
+                 *   不会平白多出一段几十秒的断档，配速也不会被拖慢。 */
+                long vTick = fz.virtualAt(tickStart);
+                long pausedMs = 0;      // 本拍里"我们自己计划好的停顿"（刷脸那 13~30 秒）
                 // ★★★ 界面优化 #6（2026-10-07）：速度改成**连续可导**的随机曲线。
                 //
                 //   旧代码：double v = vMin + rnd.nextDouble() * (vMax - vMin);
@@ -2124,7 +2148,7 @@ public class Ledao {
                     if (faceEmitFrozen && faceFrozenAt < 0) {
                         faceFrozenAt = totalM;
                         samples.add(new double[]{pos[0], pos[1], 0.0, validM,
-                                tickStart / 1000.0});
+                                vTick / 1000.0});
                         faceEmitFrozen = false;
                     }
                     if (facePauseLeft <= 1e-9) {
@@ -2189,7 +2213,10 @@ public class Ledao {
                         if (kp.isSignUp) continue;
                         if (dist(qp, new double[]{kp.lat, kp.lon}) >= 30) continue;
                         kp.isSignUp = true;
-                        kp.timestamp = System.currentTimeMillis() / 1000;
+                        /* ★ v1.0.30：打卡时刻也走**虚拟时钟** —— 它要和轨迹上的
+                         *   时间轴同一口径（不然冻过一次之后，打卡时间会落在
+                         *   轨迹末端之外，读起来自相矛盾）。 */
+                        kp.timestamp = fz.virtualAt(System.currentTimeMillis()) / 1000;
                         /* ★ 报给服务端的是**有效里程**那一刻的值 —— 官方客户端
                          *   logPoints 里的 distance 也是它自己累计的里程
                          *   （docs/22 §2.3）。路线进度 mm 与有效里程之间差着
@@ -2231,7 +2258,7 @@ public class Ledao {
                      *   写有效里程，那段没跑的灰虚线才不会变成 b/c 里的一截。 */
                     double cumV = Math.max(0, validM - (totalM - mm));
                     samples.add(new double[]{sp[0], sp[1], v, cumV,
-                            tickStart / 1000.0 + runSec * frac});
+                            vTick / 1000.0 + runSec * frac});
                 }
                 shot.add(new MapShot.P(pos[0], pos[1], v));
 
@@ -2395,7 +2422,17 @@ public class Ledao {
                             "      ★ 刷脸暂停 %.1f 秒（核验 %d ms + 停顿 %d ms）——"
                                     + "轨迹上会留一段直线缺口，之后从低速爬回巡航",
                             facePauseSec, faceCallMs, faceSleepMs));
+                    long pauseFrom = System.currentTimeMillis();
                     if (!sleep(faceSleepMs)) break;
+                    /* ★ v1.0.30（docs/62）：这一觉是**我们自己计划要睡的**，
+                     *   所以它要算进 pausedMs —— 从 slowTicks 的口径里拿掉，
+                     *   免得每次刷脸都误报一行「这一拍比计划多了 20 秒」。 */
+                    pausedMs += faceSleepMs;
+                    /* 但"计划睡 X 秒、实际睡了 X+60 秒"就是系统冻住了 ——
+                     *   多出来的那截照样要从用时里剔掉。 */
+                    String pauseLine = fz.add(
+                            System.currentTimeMillis() - pauseFrom - faceSleepMs);
+                    if (pauseLine != null) log.log(pauseLine);
                     facePauseUntil = elapsedSec + facePauseSec;
                     facePauseLeft = facePauseSec;
                 }
@@ -2411,7 +2448,11 @@ public class Ledao {
                 catch (Throwable ignore) { }
                 // ★ 把本次 HTTP 耗时从间隔里扣掉，否则实际配速会被网络延迟拖慢
                 //   （实测：不扣的话 2.2 m/s 会跑成 511 s/km，超出 480 的规则上限）
-                long spent = System.currentTimeMillis() - tickStart;
+                /* ★ v1.0.30：这里量的是"这一拍真正花了多少功"。
+                 *   把**计划内的刷脸停顿**（pausedMs）扣掉 —— 那不是"被拖长"，
+                 *   是我们按真机节奏自己停的；不扣的话每次刷脸都会误报一行
+                 *   slowTicks，那个指纹就不灵了。 */
+                long spent = System.currentTimeMillis() - tickStart - pausedMs;
                 long plan = (long) (intervalSec * 1000);
                 /* ★★★ v1.0.25：这一拍明显超时就说一句 —— 后台运行最需要这个信号。
                  *   唤醒锁正常情况下不会超时；真超了多半是
@@ -2427,12 +2468,33 @@ public class Ledao {
                     }
                 }
                 long wait = plan - spent;
+                long sleepFrom = System.currentTimeMillis();
                 if (!sleep(Math.max(0, wait))) break;
+                /* ★★★ v1.0.30（docs/62）：**睡过头 = 系统把进程冻住了**。
+                 *   正常最多偏几十毫秒；超过 2 秒就不是抖动，而是整段时间没被调度
+                 *   （Doze / 省电策略 / 应用速冻 / 后台冻结都是这个效果）。
+                 *   这就是用户报的「切到别的 App 跑步就停了」的机理：前台服务和
+                 *   常驻通知都还在（看着像在跑），但一条指令都没执行、一行日志都没有，
+                 *   所以切回来看到的是"中间那段日志是空的"。 */
+                String sleepLine = fz.add(
+                        System.currentTimeMillis() - sleepFrom - Math.max(0, wait));
+                if (sleepLine != null) log.log(sleepLine);
+                /* ★ v1.0.30：每 50 拍（≈5 分钟）把唤醒锁的兜底超时往后推一次。
+                 *   被系统冻过的场次墙上时钟走得久得多（冻 20 分钟就多 20 分钟），
+                 *   45 分钟的兜底有可能不够 —— 续一下，长跑不会半路掉锁。 */
+                if (i > 0 && i % 50 == 0) SniffGuard.keepAwake();
                 if (lastTick) break;        // 末拍已经处理完（含终点打卡），收工
                 }                           // ← 对应上面那个 else（刷脸暂停时不做推进）
             }
-            long t1 = System.currentTimeMillis() / 1000;
+            /* ★★★ v1.0.30：收尾时刻也走**虚拟时钟**。
+             *   end_time / used_time / 传感器流（packSensor 拿 used 推 endMs）
+             *   三个口径必须自洽 —— 有一个带着"被冻住的那些秒"，服务端读出来
+             *   就是"用时多了一截、里程没动"，配速直接顶到 480 s/km 的上限之外。 */
+            long t1 = fz.virtualAt(System.currentTimeMillis()) / 1000;
             long used = t1 - t0;
+            res.frozenSec = fz.frozenSec();
+            String fzSummary = fz.summary();
+            if (fzSummary != null) log.log(fzSummary);
             /* ★★★ 上报给服务端的里程 = **有效里程**（totalM 里那段刷脸缺口不算）。
              *   真机同款口径：几何 2688 m 的轨迹，上报 distance 只有 2.5271 km。 */
             double distKm = validM / 1000.0;
