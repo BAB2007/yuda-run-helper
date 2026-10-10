@@ -2936,6 +2936,28 @@ public class Ledao {
     }
 
     /**
+     * ★ v1.0.24（docs/58）：把**服务端认过**的那张照片另存一份 {@code files/face_ok.jpg}。
+     *
+     * <p>只在 {@code Run2/faceVerify} 回 {@code status=1} 时调用 —— 也就是说这份备份
+     * 是"服务端亲口说行"的证据，不是我们自己觉得行。存的就是当时**发出去的那串字节**
+     * （可能是本地小修过的），所以再发一次仍然成立。
+     *
+     * <p>失败只是少一条退路，绝不影响本场核验，所以整段包在 catch 里。
+     */
+    private void keepFaceOk(byte[] jpg) {
+        try {
+            java.io.FileOutputStream fo = new java.io.FileOutputStream(FACE_OK_PHOTO);
+            fo.write(jpg, 0, jpg.length);
+            fo.close();
+            log.log(String.format(Locale.US,
+                    "      [人脸] ✅ 服务端认了这张（%d 字节）—— 已留一份好的备份（files/%s）",
+                    jpg.length, FACE_OK_NAME));
+        } catch (Throwable t) {
+            log.log("      [人脸] 备份这张好照片失败（不影响本次核验）：" + t);
+        }
+    }
+
+    /**
      * 人脸核验（docs/28）—— 真机 `CameraActivity` 里 140 字节那个方法的等价实现：
      *
      *   1) 把用户设置好的自拍（files/face.jpg）上传到 OSS
@@ -2982,6 +3004,36 @@ public class Ledao {
             //
             //   铁证就在本仓库里：work/facedbg/src.jpg 是 SOI=True / EOI=False 的半截图。
             String bad = jpegDiag(jpg);
+            // ★★★ v1.0.24（docs/58）：本地判"有问题"**不再一票否决** —— 先修一次。
+            //   2026-10-10 13:11：用户那张 1156 KB 的自拍尾部是 00 00 00 00，
+            //   被当时的判据当场拦下 ⇒ 那一场没做刷脸核验 ⇒ 收尾被判
+            //   「人脸照片验证不合格」，白跑 2.34 km。而"重新选一张"这个提示
+            //   对同一个文件毫无用处（再选一次结果一样），用户只会以为软件坏了。
+            //   所以现在的规矩是：能修就修、修完照发，让服务端给结论（它才是权威）；
+            //   实在修不了才拦，并且把话说清楚、给出能走的路。
+            FaceFix fix = faceJpegFix(jpg);
+            if (fix != null) {
+                log.log("      🔧 人脸照片本地小修：" + fix.note);
+                if (fix.lossy) {
+                    log.log("         （有损：重新编码过，画质略降；服务端要的就是「能看到一张脸」）");
+                }
+                jpg = fix.bytes;
+                bad = jpegDiag(jpg);
+            } else if (bad.length() > 0) {
+                log.log("      ⚠ 人脸照片本地体检没过，而且本地修不了（连解码器都解不出一帧图）：" + bad);
+            }
+            // ★ 兜底：当前这张救不回来，就发**上一次服务端亲口认过**的那张
+            if (bad.length() > 0) {
+                byte[] ok = readWhole(new java.io.File(FACE_OK_PHOTO));
+                if (ok != null && jpegDiag(ok).length() == 0 && !java.util.Arrays.equals(ok, jpg)) {
+                    log.log(String.format(Locale.US,
+                            "      🔁 改用上次通过核验的那张照片（%d 字节）—— 本次核验发的是它，不是刚选的那张",
+                            ok.length));
+                    jpg = ok;
+                    bad = jpegDiag(jpg);
+                    fix = new FaceFix(ok, "用回上次通过核验的那张", false);
+                }
+            }
             // ② 只读边界解码一遍（inJustDecodeBounds 不分配像素）：连宽高都报不出来就是真解不了
             android.graphics.BitmapFactory.Options bo = new android.graphics.BitmapFactory.Options();
             bo.inJustDecodeBounds = true;
@@ -2996,22 +3048,27 @@ public class Ledao {
             if (bad.length() > 0) {
                 lastFaceInfo = "本地那张人脸照片本身不完整：" + bad;
                 lastFaceStatus = -1;
-                log.log("      ❌ 人脸照片文件本身就不完整：" + bad);
+                log.log("      ❌ 人脸照片文件本身就不完整，本地也修不了：" + bad);
                 // ★ 2026-10-08 更正：原来这里写「服务端只会回人脸验证错误…」——
                 //   那句话当晚被正对照推翻了（真机自己的好图也被同一句话顶回来），
                 //   所以这里不再拿服务端的话当理由。本地这份文件就是坏的，不发，仅此而已。
-                log.log("         本地这份就读不出完整的一帧图，**这一枪不发**（免得白挨一次上传）。");
-                log.log("         去首页点「🧑 设置人脸照片」重新选一张原图。");
+                log.log("         「修不了」的意思是：连本地解码器都解不出一帧图 —— "
+                        + "硬发出去只会白挨一次上传，而这一场会被判「人脸照片验证不合格」。");
+                log.log("         ★ 最常见的来源：这张图是从云端 / 网盘选的，本地只下了一半"
+                        + "（写了一半的文件，尾巴就是一长串 0）。");
+                log.log("           ① 先在系统相册里把它打开、确认能看到一张完整的脸，再回来重选；");
+                log.log("           ② 或者点首页那行「🧑 人脸照片」→「🔧 修复这张」／「↩ 用回上次那张」。");
                 return "";
             }
-            int tail = jpegTailBytes(jpg);
+            int[] sof = jpegSofSize(jpg);
             log.log(String.format(Locale.US,
-                    "      [人脸] 照片体检通过：%d×%d / %d 字节 / EOI 在 %d 字节处%s",
+                    "      [人脸] 照片体检通过：%d×%d / %d 字节 / EOI 在 %d 字节处 / %s%s",
                     bo.outWidth, bo.outHeight, jpg.length, jpegEoi(jpg) + 2,
-                    tail > 0
-                        ? String.format(Locale.US,
-                                " / 后面另有 %d 字节附加数据（不参与解码，原样上传）", tail)
-                        : " / 没有多余尾巴"));
+                    jpegTailDesc(jpg),
+                    sof != null ? String.format(Locale.US, " / 图里声明 %d×%d", sof[0], sof[1]) : ""));
+            if (fix != null) {
+                log.log("      [人脸] ⚠ 本次发出去的字节和文件里存的不完全一样 —— " + fix.note);
+            }
             if (jpg.length > 900 * 1024) {
                 /* ★ 2026-10-10 改口：这里原来承诺"首页重选一次就会被自动缩放"——
                  *   那是 v1.0.18 以前那条重管线的说法，缩放早已随 FacePhoto.java 一起删掉，
@@ -3095,6 +3152,9 @@ public class Ledao {
             lastFaceInfo = info;                 // ★ 界面要拿它当「原因」弹给用户看
             log.log("      [人脸] 服务端结论：status=" + st + "  info="
                     + info + (st == 1 ? "  ✅ 验脸通过" : "  ❌ 验脸没过"));
+            // ★ v1.0.24（docs/58）：服务端**亲口认过**的这张留一份好备份 ——
+            //   下次要是选到一张写坏的照片，这份能顶上去，不至于整场跑不了。
+            if (st == 1) keepFaceOk(jpg);
             // ★★★ 2026-10-08 20:58 更正 —— 这几句话到底是谁的错，终于用**正对照**定死了。
             //
             //   以前这里写的是「『请稍后重试』= 服务端没能把这张图当图解码，多半是图不完整」。
@@ -3254,6 +3314,202 @@ public class Ledao {
         return Math.max(0, jpg.length - (eoi + 2));
     }
 
+    /**
+     * EOI 之后的字节是不是**纯 0 填充**。
+     *
+     * <h3>★★★ 为什么单开这一条（2026-10-10 13:11 真机事故，docs/58）</h3>
+     * 用户那台 MTN-AN80 上选的 1156 KB 自拍，尾部最后四字节是 {@code 00 00 00 00}。
+     * 一长串 0 只可能是**空洞** —— 写到一半、或者从云端 / 网盘选了一张"本地只下了
+     * 一半"的图，文件系统里没写上的部分读出来就是 0。
+     *
+     * <p>JPEG 规范确实允许 EOI 之后有别的东西（见 {@link #jpegDiag} 里那次误拦事故），
+     * 但**几千字节的 0 不可能是图片内容**：真正的附加数据（EXIF 续段、厂商信息、
+     * 第二章缩略图）不会是一长串 0。所以全 0 的尾巴可以放心裁掉，
+     * 图片本体一个字节都不动 —— 无损。
+     *
+     * @return true 仅当"有 EOI、EOI 之后至少 1 字节、且那之后的字节全是 0"
+     */
+    public static boolean jpegTailAllZero(byte[] jpg) {
+        if (jpg == null) return false;
+        int e = jpegEoi(jpg);
+        if (e < 0) return false;
+        int from = e + 2;
+        if (from >= jpg.length) return false;
+        for (int i = from; i < jpg.length; i++) if (jpg[i] != 0) return false;
+        return true;
+    }
+
+    /**
+     * 把 EOI 之后的尾巴裁掉；**没有 EOI、或本来就没尾巴时原样返回同一个数组**
+     * （不复制、不分配 —— 调用方可以拿 {@code ==} 判断"有没有动过"）。
+     *
+     * <p>只做字节搬运，不碰图片本体：解码器本来就忽略 EOI 之后的东西。
+     * ★ 注意：**没有 EOI 的文件不要裁** —— 那种文件是"写到一半"，
+     * 尾巴里可能还藏着没解出来的图像数据，裁了只会更糟（那条路走
+     * {@link #faceJpegFix} 的重新编码分支）。
+     *
+     * <p>★ 这是**底层动作**（有尾巴就裁掉），"该不该裁"是策略 —— 见
+     * {@link #jpegTrimZeroTail}。带非 0 附加数据的图（EXIF 续段那种）要原样留着。
+     */
+    public static byte[] jpegTrimTail(byte[] jpg) {
+        if (jpg == null) return null;
+        int e = jpegEoi(jpg);
+        if (e < 0) return jpg;
+        int end = e + 2;
+        if (end >= jpg.length) return jpg;
+        return java.util.Arrays.copyOf(jpg, end);
+    }
+
+    /**
+     * 裁掉**纯 0 填充**的尾巴；其它情况一律原样返回同一个数组。
+     *
+     * <p>这是「该不该裁」的策略，也是真机上唯一被允许裁的情形：
+     * <ul>
+     *   <li>尾巴全是 0（写了一半 / 云端只下了一半）→ 裁 —— 一长串 0 不可能是内容；</li>
+     *   <li>尾巴里有非 0 字节 → 留着（JPEG 规范允许 EOI 之后有附加数据，
+     *       见 {@link #jpegDiag} 里 2026-10-10 12:22 那次误拦事故）；</li>
+     *   <li>压根没有 EOI（写到一半）→ 留着，交给 {@link #faceJpegFix} 重新编码。</li>
+     * </ul>
+     */
+    public static byte[] jpegTrimZeroTail(byte[] jpg) {
+        return jpegTailAllZero(jpg) ? jpegTrimTail(jpg) : jpg;
+    }
+
+    /**
+     * SOF 段里声明的宽高（{@code {宽, 高}}）；读不到返回 null。
+     *
+     * <p>用途：缺 EOI 的图，本机解码器会**按声明尺寸**把剩下的补成灰底 ——
+     * 光看解码结果分不出"完整"还是"半张"。有了这个声明尺寸，日志里就能说清
+     * 「它本来声明是 1024×1366，只解出 600×800」这种话。
+     */
+    public static int[] jpegSofSize(byte[] jpg) {
+        if (jpg == null || jpg.length < 12) return null;
+        int n = jpg.length, i = 2;
+        while (i + 1 < n) {
+            if ((jpg[i] & 0xFF) != 0xFF) { i++; continue; }
+            int m = jpg[i + 1] & 0xFF;
+            if (m == 0xFF || m == 0x00) { i++; continue; }
+            if (m == 0xD8 || m == 0x01 || (m >= 0xD0 && m <= 0xD7)) { i += 2; continue; }
+            if (m == 0xD9 || m == 0xDA) return null;        // 走到 SOS / EOI 还没见到 SOF
+            if (i + 3 >= n) return null;
+            int len = ((jpg[i + 2] & 0xFF) << 8) | (jpg[i + 3] & 0xFF);
+            if (len < 2) return null;
+            boolean sof = m >= 0xC0 && m <= 0xCF && m != 0xC4 && m != 0xC8 && m != 0xCC;
+            if (sof) {
+                if (len < 7 || i + 8 >= n) return null;
+                int h = ((jpg[i + 5] & 0xFF) << 8) | (jpg[i + 6] & 0xFF);
+                int w = ((jpg[i + 7] & 0xFF) << 8) | (jpg[i + 8] & 0xFF);
+                return new int[]{w, h};
+            }
+            i += 2 + len;
+        }
+        return null;
+    }
+
+    /** 尾巴的人话描述（只进日志 / 预览框）。没有 EOI 时按"没有多余尾巴"报。 */
+    public static String jpegTailDesc(byte[] jpg) {
+        int t = jpegTailBytes(jpg);
+        if (t == 0) return "没有多余尾巴";
+        if (jpegTailAllZero(jpg)) return t + " 字节 0 填充（不是图片内容）";
+        return t + " 字节附加数据（不参与解码，原样上传）";
+    }
+
+    // ==================================================================
+    //  人脸照片的「本地小修」（v1.0.24，docs/58）
+    // ==================================================================
+
+    /** {@link #faceJpegFix} 的结果：{@code bytes} 是修完能发出去的字节。 */
+    public static final class FaceFix {
+        /** 修完之后真正要上传的字节 */
+        public final byte[] bytes;
+        /** 给日志 / 界面的一句话：修了什么 */
+        public final String note;
+        /** true = 重新编码过（有损）；false = 只搬字节（无损） */
+        public final boolean lossy;
+
+        FaceFix(byte[] bytes, String note, boolean lossy) {
+            this.bytes = bytes;
+            this.note = note;
+            this.lossy = lossy;
+        }
+    }
+
+    /**
+     * 人脸照片「本地小修」—— 能把"我们自己判为有问题、但还救得回来"的照片修成一张能发的图。
+     *
+     * <h3>为什么必须有一条"修"的路（2026-10-10 13:11 真机事故）</h3>
+     * 那天用户那台手机上，选中的自拍尾部是 {@code 00 00 00 00}，被当时的判据
+     * （"最后两字节必须是 FF D9"）当场判成坏图，于是**那一场根本没做刷脸核验**，
+     * 收尾被判 {@code status=59「人脸照片验证不合格」}，白跑 2.34 km。
+     * 更糟的是错误提示让他"重新选一张原图" —— 同一个文件再选一次结果一模一样，
+     * 而 12:22 那次（同一台机器）也证明：**好图也会被我们自己的检查拦下**。
+     *
+     * <p>结论：本地判据只配"提醒"，不配"一票否决"。能修就修，修完照发，
+     * 让服务端（它才是权威）给结论；实在修不了才拦，并且要把话说清楚。
+     *
+     * <h3>两步修法（顺序就是优先级）</h3>
+     * <ol>
+     *   <li><b>无损</b>：EOI 之后是纯 0 填充 → 裁掉那截
+     *       （{@link #jpegTrimTail}，图片本体一个字节不动）。</li>
+     *   <li><b>有损</b>：结构上就是写坏的（缺 EOI）→ 本地解码 → 按**解出来的部分**
+     *       重新编码成一张完整的 JPEG（上限 1600 px，服务端要的近照够用）。
+     *       半张图的下半部分可能本来就是灰的 —— 那也比如实发一张坏图强，
+     *       至少服务端能解码，回的话才有意义。</li>
+     * </ol>
+     *
+     * @return null = 没什么可修的（本来就完好）**或**修不了（连解码都不行）；
+     *         调用方用 {@code jpegDiag(fix.bytes)} 复核一遍即可。
+     */
+    public static FaceFix faceJpegFix(byte[] jpg) {
+        if (jpg == null || jpg.length < 128) return null;
+        // ① 无损：EOI 之后是纯 0 填充 ⇒ 裁掉。
+        //    这一条**不依赖"体检没过"** —— 13:11 那张按现在的判据其实算"完好"，
+        //    只是尾部挂着 0 填充；顺手裁干净，发出去的永远是一张干净的图。
+        if (jpegTailAllZero(jpg)) {
+            byte[] t = jpegTrimZeroTail(jpg);
+            if (jpegDiag(t).length() == 0 && t.length < jpg.length) {
+                return new FaceFix(t, String.format(Locale.US,
+                        "裁掉尾部的 %d 字节 0 填充（%d → %d 字节，图片本体一个字节没动）",
+                        jpg.length - t.length, jpg.length, t.length), false);
+            }
+        }
+        // ② 结构上完好（有 EOI）⇒ 没什么可修的，别动用户的字节
+        if (jpegDiag(jpg).length() == 0) return null;
+        // ③ 有损：缺 EOI ⇒ 解码能解出来的部分，重编码成一张完整 JPEG
+        try {
+            android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
+            o.inJustDecodeBounds = true;
+            android.graphics.BitmapFactory.decodeByteArray(jpg, 0, jpg.length, o);
+            if (o.outWidth <= 0 || o.outHeight <= 0) return null;      // 连宽高都报不出来
+            int sample = 1;
+            while (o.outWidth / sample > 1600 || o.outHeight / sample > 1600) sample *= 2;
+            android.graphics.BitmapFactory.Options o2 = new android.graphics.BitmapFactory.Options();
+            o2.inSampleSize = sample;
+            android.graphics.Bitmap bm =
+                    android.graphics.BitmapFactory.decodeByteArray(jpg, 0, jpg.length, o2);
+            if (bm == null) return null;
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream(jpg.length);
+            bm.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, bo);
+            int w = bm.getWidth(), h = bm.getHeight();
+            bm.recycle();
+            byte[] out = bo.toByteArray();
+            if (jpegDiag(out).length() > 0) return null;               // 编出来还是坏的：认了
+            int[] sof = jpegSofSize(jpg);
+            String half = "";
+            if (sof != null && sof[0] > 0 && sof[1] > 0
+                    && (sof[0] > w * 1.2 || sof[1] > h * 1.2)) {
+                half = String.format(Locale.US,
+                        "；它本来声明是 %d×%d，只解出 %d×%d —— 下面可能缺一块",
+                        sof[0], sof[1], w, h);
+            }
+            return new FaceFix(out, String.format(Locale.US,
+                    "这张图缺结尾标记（写了一半 / 没下完），按能解出来的部分重新编码成 %d KB 的完整 JPEG%s",
+                    out.length / 1024, half), true);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     /** 上一次核验拿到的 id —— 真机在 `this.d` 非空时会把它带回下一次请求 */
     private volatile String lastFaceId = "";
 
@@ -3286,6 +3542,22 @@ public class Ledao {
     public volatile boolean faceOk = false;
 
     private static final String FACE_PHOTO = "/data/data/com.ledao.tester/files/face.jpg";
+
+    /**
+     * ★ v1.0.24（docs/58）：**上次通过服务端核验**的那张照片的备份文件名。
+     *
+     * <p>为什么值得留一份：用户现在选照片是"原字节直存"，选到一张写了一半 /
+     * 云端只下了一半的图（尾部是 0 填充）就可能本地修不好 —— 那时整场跑不了。
+     * 只要服务端**亲口认过**一次（status=1），就把当时发的那串字节留一份；
+     * 下次当前照片修不好时拿它顶上去，服务端认过的东西再发一次，大概率还认。
+     *
+     * <p>名字放在 Ledao 里给 MainActivity 共用（预览框的「用回上次那张」也要它）。
+     */
+    public static final String FACE_OK_NAME = "face_ok.jpg";
+
+    /** 上次通过核验的那张的完整路径（{@link #keepFaceOk}）。 */
+    private static final String FACE_OK_PHOTO =
+            "/data/data/com.ledao.tester/files/" + FACE_OK_NAME;
 
     private boolean sleep(long ms) {
         long end = System.currentTimeMillis() + ms;

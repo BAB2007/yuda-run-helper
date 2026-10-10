@@ -1064,12 +1064,25 @@ public class MainActivity extends Activity implements Ledao.Log {
         }
     }
 
-    /** 人脸照片按钮的文案：已设置就显示尺寸，没设置就提示去拍一张 */
+    /**
+     * 人脸照片按钮的文案：已设置就显示尺寸，没设置就提示去拍一张。
+     *
+     * <p>★ v1.0.24（docs/58）：顺手把结构上的毛病**写在按钮上**。以前照片坏了
+     * 按钮照样写"已设置"，用户要到起跑前那次核验才知道 —— 而那时候人已经在跑道上，
+     * 一整场就废了。现在哪怕只是"尾部有 0 填充"也会挂个 ⚠。
+     */
     private void updateFaceBtn() {
         if (btnFace == null) return;
         File f = new File(getFilesDir(), "face.jpg");
         if (f.exists() && f.length() > 0) {
-            btnFace.setText("🧑 人脸照片已设置（" + (f.length() / 1024) + " KB，点击预览 / 更换）");
+            String warn = "";
+            byte[] b = readFileBytes(f);
+            if (b != null) {
+                if (Ledao.jpegEoi(b) < 0) warn = "  ⚠ 不完整";
+                else if (Ledao.jpegTailAllZero(b)) warn = "  ⚠ 尾部有 0 填充";
+            }
+            btnFace.setText("🧑 人脸照片已设置（" + (f.length() / 1024) + " KB" + warn
+                    + "，点击预览 / 更换）");
         } else {
             btnFace.setText("🧑 设置人脸照片（随便一张自拍就行）");
         }
@@ -1112,6 +1125,10 @@ public class MainActivity extends Activity implements Ledao.Log {
         if (!f.exists() || f.length() == 0) { pickFacePhoto(); return; }
         try {
             final Bitmap bm = BitmapFactory.decodeFile(f.getAbsolutePath());
+            final byte[] fb = readFileBytes(f);            // ★ v1.0.24：结构诊断要用它
+            final String diag = fb == null ? "" : Ledao.jpegDiag(fb);
+            final int[] sof = fb == null ? null : Ledao.jpegSofSize(fb);
+            final File okF = new File(getFilesDir(), Ledao.FACE_OK_NAME);
             LinearLayout box = new LinearLayout(this);
             box.setOrientation(LinearLayout.VERTICAL);
             box.setPadding(dp(16), dp(12), dp(16), dp(4));
@@ -1141,19 +1158,128 @@ public class MainActivity extends Activity implements Ledao.Log {
             info.setText("文件  " + f.getAbsolutePath() + "\n"
                     + "大小  " + (f.length() / 1024) + " KB"
                     + (bm != null ? "　尺寸  " + bm.getWidth() + "×" + bm.getHeight() : "")
+                    + (sof != null ? "　图里声明 " + sof[0] + "×" + sof[1] : "")
+                    + "\n结构  " + (diag.length() == 0
+                        ? ("JPEG 完整，" + Ledao.jpegTailDesc(fb))
+                        : ("⚠ " + diag))
                     + "\n原样存下来的，没有裁剪、没有压缩、没有检测人脸。\n"
-                    + "服务端要的是「脸占满画面」的近照，跑前那次核验才会给结论。");
+                    + "服务端要的是「脸占满画面」的近照，跑前那次核验才会给结论。"
+                    + (okF.exists() && okF.length() > 0
+                        ? "\n上次通过核验的那张还留着备份（" + (okF.length() / 1024) + " KB）。"
+                        : ""));
             box.addView(info);
 
-            new android.app.AlertDialog.Builder(this)
+            /* ★ v1.0.24（docs/58）：照片有毛病时，就地给一条走得通的路。
+             *   以前这里只有「更换这张」—— 而同一个文件再选一次结果一模一样，
+             *   用户会以为软件坏了（12:22、13:11 两次事故都是这么卡住的）。 */
+            final android.app.AlertDialog[] holder = new android.app.AlertDialog[1];
+            if (diag.length() > 0) {
+                Button fix = new Button(this);
+                fix.setText("🔧 试试修复这张（能修就修，原图留一份）");
+                fix.setOnClickListener(v -> {
+                    if (holder[0] != null) holder[0].dismiss();
+                    repairFacePhoto();
+                });
+                box.addView(fix);
+            }
+            if (okF.exists() && okF.length() > 0) {
+                Button useOk = new Button(this);
+                useOk.setText("↩ 用回上次通过核验的那张");
+                useOk.setOnClickListener(v -> {
+                    if (holder[0] != null) holder[0].dismiss();
+                    useFaceOkPhoto();
+                });
+                box.addView(useOk);
+            }
+
+            android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(this)
                     .setTitle("人脸照片预览")
                     .setView(box)
                     .setPositiveButton("更换这张", (d, w) -> pickFacePhoto())
                     .setNeutralButton("删除", (d, w) -> deleteFacePhoto())
                     .setNegativeButton("关闭", null)
-                    .show();
+                    .create();
+            holder[0] = dlg;
+            dlg.show();
         } catch (Throwable t) {
             logFail("预览人脸照片", t);
+        }
+    }
+
+    /**
+     * ★ v1.0.24（docs/58）：把当前的人脸照片**就地修一次**，修完写回 files/face.jpg。
+     *
+     * <p>两种修法（{@link Ledao#faceJpegFix} 里的顺序就是优先级）：
+     * <ol>
+     *   <li><b>无损</b>：EOI 之后是纯 0 填充 → 裁掉那截（图片本体一个字节不动）</li>
+     *   <li><b>有损</b>：结构上写坏了（缺 EOI）→ 本地解码 → 按解出来的部分重编码成完整 JPEG</li>
+     * </ol>
+     * 原图另存一份 {@code files/face_orig.jpg}：不动用户原始数据，想删随时能删。
+     * 修完清掉本机缓存的核验凭据（照片换了，凭据必须作废）。
+     */
+    private void repairFacePhoto() {
+        final File f = faceFile();
+        if (!f.exists() || f.length() == 0) { pickFacePhoto(); return; }
+        log("🧑 开始修复人脸照片…（原图会留一份 face_orig.jpg，不会丢）");
+        new Thread(() -> {
+            try {
+                byte[] cur = readFileBytes(f);
+                if (cur == null) {
+                    log("!! 这张照片读不完整，没动它 —— 重新选一张更稳");
+                    return;
+                }
+                Ledao.FaceFix fix = Ledao.faceJpegFix(cur);
+                if (fix == null) {
+                    log(Ledao.jpegDiag(cur).length() == 0
+                            ? "🔧 这张照片结构上没毛病（没有可修的地方）"
+                            : "🔧 这张照片本地修不了：连解码器都解不出一帧图 —— 只能换一张");
+                    log("   " + Ledao.jpegDiag(cur));
+                    ui.post(() -> Toast.makeText(MainActivity.this,
+                            "这张修不了，换一张吧", Toast.LENGTH_LONG).show());
+                    return;
+                }
+                File orig = new File(getFilesDir(), "face_orig.jpg");
+                if (!orig.exists() || orig.length() == 0) copyFile(f, orig);
+                FileOutputStream fo = new FileOutputStream(f);
+                fo.write(fix.bytes, 0, fix.bytes.length);
+                fo.close();
+                if (ledao != null) ledao.resetFaceState();   // 照片变了，旧凭据作废
+                log(String.format(Locale.US,
+                        "✅ 人脸照片已修复：%d KB → %d KB%s",
+                        cur.length / 1024, fix.bytes.length / 1024,
+                        fix.lossy ? "（重新编码过，画质略有损失）" : "（无损，图片本体没动）"));
+                log("   修的内容：" + fix.note);
+                log("   原图留在 files/face_orig.jpg（想删就用「删除」那颗，一起删掉）。");
+                ui.post(this::updateFaceBtn);
+            } catch (Throwable e) {
+                logFail("修复人脸照片", e);
+            }
+        }, "face-repair").start();
+    }
+
+    /**
+     * ★ v1.0.24（docs/58）：把**上次通过服务端核验**的那张（files/face_ok.jpg）
+     * 拿回来当当前照片 —— 当前这张救不回来时的最后一条路。
+     */
+    private void useFaceOkPhoto() {
+        final File ok = new File(getFilesDir(), Ledao.FACE_OK_NAME);
+        if (!ok.exists() || ok.length() == 0) {
+            log("🧑 还没有「上次通过核验」的备份（得先有一场核验通过才会有）");
+            return;
+        }
+        try {
+            copyFile(ok, faceFile());
+            new File(getFilesDir(), "face_pick.tmp").delete();
+            if (ledao != null) ledao.resetFaceState();
+            byte[] b = readFileBytes(faceFile());
+            log(String.format(Locale.US,
+                    "✅ 已换回上次通过核验的那张照片（%d KB）%s",
+                    ok.length() / 1024,
+                    b == null ? "" : "；结构 " + (Ledao.jpegDiag(b).length() == 0
+                            ? "完整（" + Ledao.jpegTailDesc(b) + "）" : "⚠ " + Ledao.jpegDiag(b))));
+            updateFaceBtn();
+        } catch (Throwable t) {
+            logFail("换回上次通过核验的照片", t);
         }
     }
 
@@ -1168,10 +1294,15 @@ public class MainActivity extends Activity implements Ledao.Log {
         // 顺手清掉选图时留下的临时文件
         new File(getFilesDir(), "face_pick.tmp").delete();
         new File(getFilesDir(), "face_new.jpg").delete();
+        /* ★ v1.0.24：备份也要一起删 —— 用户点「删除」的意思就是"别留我的自拍"，
+         *   留着 face_ok.jpg / face_orig.jpg 等于偷偷藏了两张（这是隐私，不是缓存）。 */
+        new File(getFilesDir(), Ledao.FACE_OK_NAME).delete();
+        new File(getFilesDir(), "face_orig.jpg").delete();
         if (ledao != null) ledao.resetFaceState();
         updateFaceBtn();
-        log(had ? "🧑 人脸照片已删除 —— 下次跑步不会做刷脸核验了"
-                : "🧑 本来就没有人脸照片");
+        if (had) log("🧑 人脸照片已删除 —— 下次跑步不会做刷脸核验了"
+                + "（连 files/face_ok.jpg、face_orig.jpg 一起删了，不留备份）");
+        else log("🧑 本来就没有人脸照片");
         Toast.makeText(this, had ? "已删除人脸照片" : "没有可删的人脸照片",
                 Toast.LENGTH_SHORT).show();
     }
@@ -1236,14 +1367,46 @@ public class MainActivity extends Activity implements Ledao.Log {
                     log("!! 读到 0 字节 —— 这个 Uri 给不出内容，照片未改动");
                     return;
                 }
+                /* ★★★ v1.0.24（docs/58）：存进来的时候就做一次**只读**体检，顺手裁掉尾部 0 填充。
+                 *   为什么要在这里做：2026-10-10 13:11，用户那台 MTN-AN80 上选中的
+                 *   1156 KB 自拍，尾部最后四字节是 {@code 00 00 00 00}（写了一半 /
+                 *   从云端只下了一半），被当时那条「最后两字节必须是 FF D9」的判据
+                 *   当场判成坏图 ⇒ 那一场没做刷脸核验 ⇒ 收尾被判
+                 *   「人脸照片验证不合格」，白跑 2.34 km。
+                 *   裁 0 填充是**无损**的：EOI 之后不属于图片，而一长串 0 更不可能是内容。
+                 *   ★ 这里只用纯字节函数：不解码、不裁剪、不缩放、不压缩（用户第 1 条要求）。 */
+                String jpegNote = "";
+                try {
+                    byte[] got = readFileBytes(tmp);
+                    if (got != null && got.length >= 128) {
+                        byte[] t = Ledao.jpegTrimZeroTail(got);
+                        if (t.length < got.length) {
+                            FileOutputStream fo2 = new FileOutputStream(tmp);
+                            fo2.write(t, 0, t.length);
+                            fo2.close();
+                            total = t.length;
+                            jpegNote = "；尾部 " + (got.length - t.length)
+                                     + " 字节 0 填充已裁掉（图片本体一字节没动）";
+                        } else if (Ledao.jpegEoi(got) < 0) {
+                            jpegNote = "；⚠ 这张图 JPEG 不完整（没有结尾标记 EOI）——"
+                                     + "跑步时我会先本地修一次（按能解出来的部分重编码），"
+                                     + "修不好会明确提醒你换一张";
+                        } else if (Ledao.jpegTailBytes(got) > 0) {
+                            jpegNote = "；EOI 后有 " + Ledao.jpegTailBytes(got)
+                                     + " 字节附加数据（JPEG 允许，原样保留）";
+                        }
+                    }
+                } catch (Throwable ignore) {
+                    /* 体检失败绝不影响保存本身 —— 照片已经在 tmp 里了 */
+                }
                 long before = dst.exists() ? dst.length() : 0;
                 if (dst.exists() && !dst.delete()) log("   （旧照片没删掉，直接覆盖）");
                 if (!tmp.renameTo(dst)) { copyFile(tmp, dst); tmp.delete(); }
                 new File(getFilesDir(), "face_pick.tmp").delete();
                 if (ledao != null) ledao.resetFaceState();     // 换了照片，旧的核验凭据作废
                 log(String.format(Locale.US,
-                        "✅ 人脸照片已保存：%s  %d KB（原 %d KB）—— 未经任何处理",
-                        dst.getAbsolutePath(), dst.length() / 1024, before / 1024));
+                        "✅ 人脸照片已保存：%s  %d KB（原 %d KB）—— 未经任何处理%s",
+                        dst.getAbsolutePath(), dst.length() / 1024, before / 1024, jpegNote));
                 log("   点首页那行「🧑 人脸照片」可以预览 / 更换 / 删除。");
                 ui.post(this::updateFaceBtn);
             } catch (Throwable e) {
@@ -1261,6 +1424,32 @@ public class MainActivity extends Activity implements Ledao.Log {
         while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
         in.close();
         out.close();
+    }
+
+    /**
+     * ★ v1.0.24：把整份文件读进来（读不满返回 null）—— 只给"看结构"用。
+     *
+     * <p>为什么不用 {@code Files.readAllBytes}：这里跑在 UI 线程上（按钮文案、
+     * 预览框），必须自己设一个上限。人脸照片本身就有 8 MB 上限，再加一点余量。
+     * 失败一律返回 null —— 调用方全部按"看不出问题"处理，绝不因此拦住用户。
+     */
+    private static byte[] readFileBytes(File f) {
+        try {
+            long n = f == null ? 0 : f.length();
+            if (n <= 0 || n > FACE_MAX_BYTES + 65536) return null;
+            byte[] b = new byte[(int) n];
+            java.io.FileInputStream in = new java.io.FileInputStream(f);
+            int off = 0;
+            while (off < b.length) {
+                int r = in.read(b, off, b.length - off);
+                if (r <= 0) break;
+                off += r;
+            }
+            in.close();
+            return off == b.length ? b : null;
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     private String copyToFiles(Uri u, String name) throws Exception {        InputStream in = getContentResolver().openInputStream(u);
@@ -3092,9 +3281,33 @@ public class MainActivity extends Activity implements Ledao.Log {
                         "[自检] 人脸体检②本机解码器：%s（%dx%d）",
                         ok2 ? "通过 ✅" : "没过 ❌ 报不出宽高", bo.outWidth, bo.outHeight));
 
+                /* ★ v1.0.24（docs/58）加的两行：跑前那次核验现在还会**先修一次**、
+                 *   修不动就用上次通过核验的那张 —— 所以自检也得把这三件事一起报出来，
+                 *   否则"照片有问题"和"这一场能不能跑"还是两笔账。 */
+                Ledao.FaceFix fx = Ledao.faceJpegFix(jpg);
+                log(fx == null
+                        ? "[自检] 人脸体检③本地小修：不需要（结构上没毛病）"
+                        : ("[自检] 人脸体检③本地小修：能修 ✅ —— " + fx.note
+                           + "（" + jpg.length + " → " + fx.bytes.length + " 字节"
+                           + (fx.lossy ? "，有损" : "，无损") + "）"));
+                byte[] okb = null;
+                try {
+                    File okf = new File(getFilesDir(), Ledao.FACE_OK_NAME);
+                    if (okf.exists() && okf.length() > 0) okb = readFileBytes(okf);
+                } catch (Throwable ignore) { }
+                log(okb == null
+                        ? "[自检] 人脸体检④备用照片：还没有（得先有一场核验通过才会有）"
+                        : String.format(Locale.US,
+                           "[自检] 人脸体检④备用照片：有（%d 字节，结构%s）",
+                           okb.length, Ledao.jpegDiag(okb).length() == 0 ? "完整 ✅" : "也不完整 ❌"));
+
+                boolean willSend = bad.length() == 0 || fx != null || okb != null;
                 log(bad.length() == 0 && ok2
                         ? "[自检] 结论：这张照片跑前那道关会放行 —— 可以正常开跑"
-                        : "[自检] 结论：跑前会被拦下（和真跑时的判断一致）");
+                        : (willSend
+                           ? "[自检] 结论：这张照片本身有毛病，但**本地能修**（或能拿备用那张顶上）——"
+                             + "跑前那次核验会照发，让服务端给结论"
+                           : "[自检] 结论：跑前会被拦下（和真跑时的判断一致）"));
             } catch (Throwable t) {
                 log("[自检] 读人脸照片失败：" + Err.one(t));
             }
