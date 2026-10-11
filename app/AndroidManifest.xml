@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.ledao.tester"
+    android:versionCode="134"
+    android:versionName="1.0.34">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- ★ v1.0.30（docs/62）：前台服务**类型**对应的权限。
+         服务是 android:foregroundServiceType="dataSync"，startForeground 也带
+         FOREGROUND_SERVICE_TYPE_DATA_SYNC。本 App 的 targetSdk 还是 28，
+         Android 14+ 只对高 targetSdk 强制要求；但国产 ROM 自己的省电策略会看
+         这个类型，而且哪天抬 targetSdk 就必须有 —— 一次配齐。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 跑步前把后台的步道乐跑进程干掉。
+         否则它会在跑步中途自己刷新令牌（单会话），把我们的令牌顶掉 →
+         后半程全返回 102「该账号已在其他手机登录」，OSS 凭证拿不到，整趟白跑。
+         这是普通权限，安装即得，不需要 root。 -->
+    <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
+    <uses-permission android:name="android.permission.GET_TASKS" />
+    <!-- 用于自动开关系统代理（Android 10 以下没有 VPN 通道时才会用到；
+         未授权时退化为手动设置并给出提示）
+         一次性授权：adb shell pm grant com.ledao.tester android.permission.WRITE_SECURE_SETTINGS -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
+    <!-- ★ 2026-10-10 用户第 2 条：助手被切到后台时，跑步出错要"像收消息一样"提醒。
+         本 APK 的 targetSdk 还是 28，Android 13/14 会在建通知渠道那一下自动弹一次
+         授权框；Android 15 以后这条例外没了，所以 MainActivity 还会显式申请一次
+         （askNotifyPermission）。这条权限被拒**不影响跑步**，只是后台不再提醒。 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- ★ v1.0.25 曾经在这里声明过「忽略电池优化」那条权限（首页那行
+         「🔋 后台运行设置」用来申请 AOSP 那层白名单）。★ v1.0.33 用户把那块整个
+         删掉了（docs/65：后台这件事交给迷你小窗），没人再申请它 ——
+         用不上的权限就别声明，一并撤掉。真机实测那份 AOSP 白名单国产 ROM 也不看
+         （docs/62：进程照样被冻），真正的开关是系统自己的「自启动 / 后台活动」，
+         入口在「🪟 迷你小窗」向导第 ④ 步。 -->
+    <!-- ★★★ v1.0.32（docs/64）：迷你小窗 —— 切走时把自己缩成右上角一个可见的小窗。
+         为什么它比"求系统别冻我"更管用：国产 ROM 的省电策略会冻前台服务（v1.0.30
+         真机上量到过：进程被冻、通知还挂着），但只要进程**有可见窗口**，
+         它在系统眼里就不是"可以冻结的后台"。这条权限是 Android 6 起就有的标准项，
+         不需要 root、不需要各家白名单 —— 用户点一次「显示在其他应用上层」即可。
+         （息屏那一段它帮不上忙：屏幕黑了窗口不算可见，那一段靠 WAKE_LOCK。）
+         没有这条权限时一切降级为 v1.0.30 的行为，功能不受影响。 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="28" />
+
+    <!-- ★ 用 NoActionBar 主题：去掉系统那条黑色标题栏（用户要求） -->
+    <application
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:allowBackup="false"
+        android:usesCleartextTraffic="true"
+        android:hardwareAccelerated="true">
+
+        <!-- ★ launchMode=singleTask 是必须的：助手为了抢身份会反复
+             「打开步道乐跑 → 切回助手」，只有 singleTask 才能保证切回来时
+             复用同一个实例（否则新建实例 → worker 归零 → 又开一局 →
+             多个跑步线程抢同一个账号会话 → 服务端一路 102）。 -->
+        <activity
+            android:name=".MainActivity"
+            android:label="@string/app_name"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 抓包守护：跑步期间保证进程不被后台清理杀掉。
+             ★ v1.0.30：补上 foregroundServiceType（与 startForeground 传的类型一致） -->
+        <service
+            android:name=".SniffGuard"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
+
+        <!-- VPN 抓包通道（Android 10+）：不用改系统代理，也不需要 adb 授权。
+             用户只需授权一次「允许 VPN」。 -->
+        <service
+            android:name=".ProxyVpn"
+            android:exported="false"
+            android:permission="android.permission.BIND_VPN_SERVICE">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>
