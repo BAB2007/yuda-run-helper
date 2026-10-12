@@ -21,13 +21,13 @@
 gitee下载方式:
 
 复制gitee地址点击'代码',
-![img](https://github.com/BAB2007/yuda-run-helper/blob/main/doc/576f14629a47f55b306191557f0d8008.jpg)
+![img](https://gitee.com/BAB2007/yuda-run-helper/blob/main/doc/576f14629a47f55b306191557f0d8008.jpg)
 点击'宇达步道乐跑助手',
-![img](https://github.com/BAB2007/yuda-run-helper/blob/main/doc/7c394f8d0ba9ff9d2b929d9384653d1e.jpg)
+![img](https://gitee.com/BAB2007/yuda-run-helper/blob/main/doc/7c394f8d0ba9ff9d2b929d9384653d1e.jpg)
 点击'宇达步道乐跑助手.apk',
-![img](https://github.com/BAB2007/yuda-run-helper/blob/main/doc/719a3ed8dc8cab2813f88710726e2f54.jpg)
+![img](https://gitee.com/BAB2007/yuda-run-helper/blob/main/doc/719a3ed8dc8cab2813f88710726e2f54.jpg)
 点击下载
-![img](https://github.com/BAB2007/yuda-run-helper/blob/main/doc/69f0ecd0ea852d351a9c65188a5e2db9.jpg)
+![img](https://gitee.com/BAB2007/yuda-run-helper/blob/main/doc/69f0ecd0ea852d351a9c65188a5e2db9.jpg)
 点击进行下载
 一路通过
 github类似
@@ -87,7 +87,7 @@ github类似
 
 > ⚠️ 跑步期间**不要同时打开步道乐跑**。它是单会话登录，两边同时在线会互相顶掉。
 
-更细的图文步骤、常见问题在 **[使用说明.md](https://github.com/BAB2007/yuda-run-helper/blob/main/使用说明.md)**。
+更细的图文步骤、常见问题在 **[使用说明.md](https://gitee.com/BAB2007/yuda-run-helper/blob/main/使用说明.md)**。
 
 ---
 
@@ -115,9 +115,9 @@ github类似
 4. 路过打卡点照样打卡；中途刷脸就用你存的那张自拍走同一套核验；
 5. 收尾照样上传那三段文件。
 
-![步道乐跑与助手原理对比](https://github.com/BAB2007/yuda-run-helper/raw/main/doc/principle-compare.png)
+![步道乐跑与助手原理对比](https://gitee.com/BAB2007/yuda-run-helper/raw/main/doc/principle-compare.png)
 
-![报文层：两边发出去的是同一种请求](https://github.com/BAB2007/yuda-run-helper/raw/main/doc/principle-protocol.png)
+![报文层：两边发出去的是同一种请求](https://gitee.com/BAB2007/yuda-run-helper/raw/main/doc/principle-protocol.png)
 
 **所以**
 
@@ -155,7 +155,7 @@ github类似
 > 软件制作不易，不强制收费，允许白嫖，但也不拒绝打赏，回回血[doge]
 
 <div align="center">
-  <img src="https://github.com/BAB2007/yuda-run-helper/raw/main/app/assets/pay_qr.png" width="230" alt="支付宝收款码">
+  <img src="https://gitee.com/BAB2007/yuda-run-helper/raw/main/app/assets/pay_qr.png" width="230" alt="支付宝收款码">
   <br>
   <sub>支付宝扫这个码就行（另一个手机扫、或者截图下来扫都可以）；不扫也完全没关系，功能一个不少。</sub>
 </div>
