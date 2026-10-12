@@ -21,23 +21,22 @@
 gitee下载方式:
 
 复制gitee地址点击'代码',
-![1](https://gitee.com/BAB2007/yuda-run-helper/blob/main/doc/576f14629a47f55b306191557f0d8008.jpg)
+![1](https://gitee.com/BAB2007/yuda-run-helper/raw/main/doc/576f14629a47f55b306191557f0d8008.jpg)
 点击'宇达步道乐跑助手',
-![img](https://gitee.com/BAB2007/yuda-run-helper/blob/main/doc/7c394f8d0ba9ff9d2b929d9384653d1e.jpg)
+![img](https://gitee.com/BAB2007/yuda-run-helper/raw/main/doc/7c394f8d0ba9ff9d2b929d9384653d1e.jpg)
 点击'宇达步道乐跑助手.apk',
-![img](https://gitee.com/BAB2007/yuda-run-helper/blob/main/doc/719a3ed8dc8cab2813f88710726e2f54.jpg)
+![img](https://gitee.com/BAB2007/yuda-run-helper/raw/main/doc/719a3ed8dc8cab2813f88710726e2f54.jpg)
 点击下载
-![img](https://gitee.com/BAB2007/yuda-run-helper/blob/main/doc/69f0ecd0ea852d351a9c65188a5e2db9.jpg)
+![img](https://gitee.com/BAB2007/yuda-run-helper/raw/main/doc/69f0ecd0ea852d351a9c65188a5e2db9.jpg)
 点击进行下载
 一路通过
 github类似
 
-**文字说明**：进入 <https://github.com/BAB2007/yuda-run-helper>（国内打不开就用
-<https://gitee.com/BAB2007/yuda-run-helper>）后点击右上角的 **Code** 按钮，
+**文字说明**：进入 <https://gitee.com/BAB2007/yuda-run-helper>（备用 GitHub 地址：<https://github.com/BAB2007/yuda-run-helper>）后点击右上角的 **Code** 按钮，
 选择 **Download ZIP**，下载完成后解压即可。
 
 不想下整个压缩包的话，直接进
-[`宇达步道乐跑助手/`](https://github.com/BAB2007/yuda-run-helper/blob/main/宇达步道乐跑助手/) 目录点那个 APK，再点 **Download raw file** 就行。
+[`宇达步道乐跑助手/`](https://gitee.com/BAB2007/yuda-run-helper/tree/main/宇达步道乐跑助手/) 目录点那个 APK，再点 **Download raw file** 就行。
 **仓库里只留一份安装包，文件名带版本号** —— 当前版本：**v1.0.34**，
 文件名 `宇达步道乐跑助手-v1.0.34.apk`。装完打开，**标题栏右侧就是版本号**，
 对不上就是下到了旧的（下到了旧的按 `Ctrl+F5` 强刷一次页面）。
@@ -172,15 +171,15 @@ github类似
    你的账号数据只在**你的手机**与**步道乐跑官方服务器**之间流转。
 4. **账号边界**：本软件只作用于**本机已经登录的那个账号**，无法给他人刷记录。
    请不要拿别人的账号、别人的手机做测试。
-5. **获取渠道**：请在 **GitHub**（<https://github.com/BAB2007/yuda-run-helper>）、
-   **Gitee**（<https://gitee.com/BAB2007/yuda-run-helper>）或通过本人 QQ 小号
+5. **获取渠道**：请在 **Gitee**（<https://gitee.com/BAB2007/yuda-run-helper>）、
+   **GitHub**（<https://github.com/BAB2007/yuda-run-helper>）或通过本人 QQ 小号
    （**3855962053**）获取。通过其余途径下载而导致的信息被盗、财产损失等问题，
    本人一概不负责；如果您已经通过其他途径下载了本软件还未使用，
    为避免不必要的麻烦，建议请立即删除。
 6. **尊重官方**：本软件与步道乐跑官方无任何关系，未获得其授权或认可。
    如果官方明确反对，请立即停止使用并删除本软件；作者也会在收到相关要求后
    果断删库跑路。
-7. **开源许可**：本项目以 **Apache-2.0** 许可开源（见 [LICENSE](https://github.com/BAB2007/yuda-run-helper/blob/main/LICENSE)），
+7. **开源许可**：本项目以 **Apache-2.0** 许可开源（见 [LICENSE](https://gitee.com/BAB2007/yuda-run-helper/blob/master/LICENSE)），
    请保留版权与许可声明；使用本项目代码产生的一切后果由使用者自负。
 8. **锻炼本身是必要的**：冬天跑校园跑很 cs，但**如果有别的锻炼形式，大家还是要锻炼一下的**。
    本软件是否存活以及是否更新的决策权在作者本人，受到不可抗拒因素的影响时会果断删库跑路。
@@ -191,17 +190,7 @@ github类似
 
 * 邮箱：**3855962053@qq.com**（遇到报错、多次重试后仍无法使用，请点「复制日志」把日志发过来）
 * QQ 小号：**3855962053**
-* GitHub Issues：<https://github.com/BAB2007/yuda-run-helper/issues>
 * Gitee Issues：<https://gitee.com/BAB2007/yuda-run-helper/issues>
+* GitHub Issues：<https://github.com/BAB2007/yuda-run-helper/issues>
 
 ## 目录
-
-```
-app/                        Android 工程（25 个 Java 文件，无 Gradle）
-  src/com/ledao/tester/     源码
-  assets/                   校园路网 / 水面 / 街道栅格 / 内置图标 / 收款码
-  res/                      图标 / 字符串
-build_apk.py                不用 Gradle 的构建脚本
-doc/                        原理图与使用说明里的截图
-使用说明.md                  图文使用说明
-```
