@@ -18,26 +18,25 @@
 
 **视频教程**： 煮波发现自己不会剪辑，莫有视频演示
 
-gitee下载方式:
+github下载方式:
 
-复制gitee地址点击'代码',
-![img](https://github.com/BAB2007/yuda-run-helper/blob/main/doc/576f14629a47f55b306191557f0d8008.jpg)
+复制github地址点击'代码',
+![1](https://github.com/BAB2007/yuda-run-helper/raw/main/doc/576f14629a47f55b306191557f0d8008.jpg)
 点击'宇达步道乐跑助手',
-![img](https://github.com/BAB2007/yuda-run-helper/blob/main/doc/7c394f8d0ba9ff9d2b929d9384653d1e.jpg)
+![img](https://github.com/BAB2007/yuda-run-helper/raw/main/doc/7c394f8d0ba9ff9d2b929d9384653d1e.jpg)
 点击'宇达步道乐跑助手.apk',
-![img](https://github.com/BAB2007/yuda-run-helper/blob/main/doc/719a3ed8dc8cab2813f88710726e2f54.jpg)
+![img](https://github.com/BAB2007/yuda-run-helper/raw/main/doc/719a3ed8dc8cab2813f88710726e2f54.jpg)
 点击下载
-![img](https://github.com/BAB2007/yuda-run-helper/blob/main/doc/69f0ecd0ea852d351a9c65188a5e2db9.jpg)
+![img](https://github.com/BAB2007/yuda-run-helper/raw/main/doc/69f0ecd0ea852d351a9c65188a5e2db9.jpg)
 点击进行下载
 一路通过
-github类似
+gitee类似
 
-**文字说明**：进入 <https://github.com/BAB2007/yuda-run-helper>（国内打不开就用
-<https://gitee.com/BAB2007/yuda-run-helper>）后点击右上角的 **Code** 按钮，
+**文字说明**：进入 <https://github.com/BAB2007/yuda-run-helper>（国内打不开就用 <https://gitee.com/BAB2007/yuda-run-helper>）后点击右上角的 **Code** 按钮，
 选择 **Download ZIP**，下载完成后解压即可。
 
 不想下整个压缩包的话，直接进
-[`宇达步道乐跑助手/`](https://github.com/BAB2007/yuda-run-helper/blob/main/宇达步道乐跑助手/) 目录点那个 APK，再点 **Download raw file** 就行。
+[`宇达步道乐跑助手/`](https://github.com/BAB2007/yuda-run-helper/tree/main/宇达步道乐跑助手/) 目录点那个 APK，再点 **Download raw file** 就行。
 **仓库里只留一份安装包，文件名带版本号** —— 当前版本：**v1.0.34**，
 文件名 `宇达步道乐跑助手-v1.0.34.apk`。装完打开，**标题栏右侧就是版本号**，
 对不上就是下到了旧的（下到了旧的按 `Ctrl+F5` 强刷一次页面）。
@@ -195,13 +194,3 @@ github类似
 * Gitee Issues：<https://gitee.com/BAB2007/yuda-run-helper/issues>
 
 ## 目录
-
-```
-app/                        Android 工程（25 个 Java 文件，无 Gradle）
-  src/com/ledao/tester/     源码
-  assets/                   校园路网 / 水面 / 街道栅格 / 内置图标 / 收款码
-  res/                      图标 / 字符串
-build_apk.py                不用 Gradle 的构建脚本
-doc/                        原理图与使用说明里的截图
-使用说明.md                  图文使用说明
-```
