@@ -21,7 +21,7 @@
 gitee下载方式:
 
 复制gitee地址点击'代码',
-![img](https://gitee.com/BAB2007/yuda-run-helper/blob/main/doc/576f14629a47f55b306191557f0d8008.jpg)
+![1](https://gitee.com/BAB2007/yuda-run-helper/blob/main/doc/576f14629a47f55b306191557f0d8008.jpg)
 点击'宇达步道乐跑助手',
 ![img](https://gitee.com/BAB2007/yuda-run-helper/blob/main/doc/7c394f8d0ba9ff9d2b929d9384653d1e.jpg)
 点击'宇达步道乐跑助手.apk',
