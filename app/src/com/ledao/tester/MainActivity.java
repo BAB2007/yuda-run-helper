@@ -95,14 +95,27 @@ public class MainActivity extends Activity implements Ledao.Log {
     private RouteNet routeNet;
 
     // ---------------- UI
-    private EditText etIdent;
+    /**
+     * ★★★ 2026-10-17 用户第 3 条：「删掉用户标识界面（不能手动修改用户标识）」。
+     *
+     * <p>原先这里有 {@code EditText etIdent}（手动粘贴/修改身份）与一个**会印出
+     *   uid/学号/令牌/设备号**的身份小框。现在：
+     * <ul>
+     *   <li>{@code etIdent} / {@code identEditor} / {@code btnEdit} / {@code buildIdentEditor()}
+     *       —— 全部删除（那是"手动修改用户标识"）；</li>
+     *   <li>{@code tvIdentBrief} <b>保留</b>，但内容只剩**状态**（{@link #identStatusText()}：
+     *       「身份：已就绪 ✅」/「身份：未取到」），不再显示任何标识值；</li>
+     *   <li>身份本身活在 {@link #identCache} 里（uid/token/… 的 k=v 串），
+     *       只由「📥 载入步道乐跑并抓取身份」这条自动路径写入，界面既看不到也改不了。</li>
+     * </ul>
+     */
+    private String identCache = "";
     private TextView tvLog, tvStatus, tvIdentBrief, tvRouteHead, tvRouteInfo, tvTitle, tvAutoInfo;
-    private Button btnRun, btnSniff, btnClear, btnProxyHelp, btnCopyLog, btnCa, btnEdit, btnRealId, btnFace, btnMini;
+    private Button btnRun, btnSniff, btnClear, btnProxyHelp, btnCopyLog, btnCa, btnRealId, btnFace, btnMini;
     private Button btnMenu;
     /** 地图卡片的容器 */
     private CampusMapView map;
     private LinearLayout routeBody, drawerPanel, markGrid;
-    private View identEditor;
     private ScrollView scLog;
     /** 侧边栏 */
     private FrameLayout rootFrame;
@@ -114,7 +127,7 @@ public class MainActivity extends Activity implements Ledao.Log {
     // ---------------- 状态
     private Thread worker;
     private Thread extractThread;
-    /** 「载入步道乐跑取标识」的后台线程 */
+    /** 「载入步道乐跑抓取身份」的后台线程 */
     private Thread realIdThread;
     private volatile Ledao ledao;
     private LocalProxy proxy;
@@ -210,7 +223,9 @@ public class MainActivity extends Activity implements Ledao.Log {
         applyTheme();
 
         SharedPreferences sp = getSharedPreferences(PREF, MODE_PRIVATE);
-        etIdent.setText(sp.getString("ident", ""));
+        /* ★ 2026-10-17：身份从偏好里读进**内部缓存**（界面上没有输入框了）。
+         *   唯一写入方是「📥 载入步道乐跑」那条自动抓取路径（见 persistIdent）。 */
+        identCache = sp.getString("ident", "");
         routeOpen = sp.getBoolean(AppPrefs.K_ROUTE_OPEN, true);
         applyRouteOpen();
 
@@ -278,7 +293,7 @@ public class MainActivity extends Activity implements Ledao.Log {
          *   步就是"把步道乐跑拉起来"—— 于是用户一进助手就被弹到另一个 App 里，
          *   连"要不要抓"都没得选。用户原话：「只有点「📲 自动提取」才能跳过去」。
          *   现在只提示、不动手：什么时候取身份，由用户点那一行决定。 */
-        if (etIdent.getText().toString().trim().length() == 0) {
+        if (identCache == null || identCache.trim().length() == 0) {
             log("（身份还是空的）点「📲 自动提取」去取一次 —— 助手不会自己跳到步道乐跑。");
             setStatus("👋 身份还没取 —— 点「📲 自动提取」（会带你去步道乐跑取一次）");
             ui.postDelayed(() -> {
@@ -466,9 +481,12 @@ public class MainActivity extends Activity implements Ledao.Log {
         String dist = it.getStringExtra("distance");
         String spd = it.getStringExtra("speed");
         if (ident != null && ident.length() > 0) {
-            etIdent.setText(ident);
+            /* ★ 2026-10-17：`ident` 这个 Intent 参数（adb / 自检注入身份用）保留，
+             *   但落点是内部缓存，不再是界面上的输入框。 */
+            identCache = ident;
+            persistIdentCache();
             refreshIdentBox();
-            log("[Intent] 已注入身份参数 (" + ident.length() + " 字符)");
+            log("[Intent] 已注入身份参数（" + ident.length() + " 字符，内容不打印）");
         }
         // ★ 2026-10-07 界面优化 #1：里程框已删，走 Intent 时记到进程级强制值上
         if (dist != null && dist.length() > 0) {
@@ -488,7 +506,7 @@ public class MainActivity extends Activity implements Ledao.Log {
         }
         if (it.getBooleanExtra("realid", false)) {
             // ★ 调试/自动化用：载入步道乐跑现场取 mobileDeviceId（docs/24）
-            log("[Intent] realid=true —— 载入步道乐跑取标识");
+            log("[Intent] realid=true —— 载入步道乐跑抓取身份");
             ui.postDelayed(() -> captureRealId(it.getBooleanExtra("thenrun", false)), 500);
         }
     }
@@ -498,59 +516,67 @@ public class MainActivity extends Activity implements Ledao.Log {
     // ==================================================================
     private View buildUI() {
         rootFrame = new FrameLayout(this);
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(10), dp(6), dp(10), dp(8));
-        root.setBackgroundColor(Color.parseColor("#F2F5F3"));
+        /* ★★★ 2026-10-17 Q 版皮肤（和 app3「步道乐跑刷跑」/ app4「提取端」同一套）：
+         *   奶油底 + 大圆角白卡片 + 糖果色胶囊按钮 + 墨色字。
+         *   皮肤本体在 {@link Q} 与 {@link UiKit} 里（从 app3 逐字拷来，只改了包名），
+         *   这一页只负责摆控件 —— 颜色/圆角/描边全部走 Q.*。 */
+        LinearLayout root = UiKit.col(this);
+        root.setPadding(Q.dp(this, 11), Q.dp(this, 10), Q.dp(this, 11), Q.dp(this, 8));
+        root.setBackgroundColor(Q.BG);
         contentRoot = root;
         cards.add(root);
         rootFrame.addView(root, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // ---- 标题行：三条杠 + 标题（系统那条黑色标题栏已经在主题里去掉了）
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        btnMenu = new Button(this);
-        btnMenu.setText("☰");
-        btnMenu.setTextSize(20f);
-        btnMenu.setPadding(0, 0, 0, 0);
-        btnMenu.setMinWidth(dp(48));
-        btnMenu.setMinimumWidth(dp(48));
-        btnMenu.setBackgroundColor(Color.TRANSPARENT);
-        btnMenu.setOnClickListener(v -> toggleDrawer());
-        bar.addView(btnMenu, new LinearLayout.LayoutParams(dp(50), dp(42)));
-        tvTitle = new TextView(this);
-        tvTitle.setText("宇达步道乐跑助手");
-        tvTitle.setTextSize(17f);
-        tvTitle.setGravity(Gravity.CENTER_VERTICAL);
-        bar.addView(tvTitle, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        TextView tvVer = new TextView(this);
+        // ---- 顶栏卡片：🏃 + 标题 + 版本 + ☰（Q 版招牌写法，照 app4 的 head 卡）
+        //   （系统那条黑色标题栏已经在主题里去掉了）
+        LinearLayout head = Q.card(this);
+        LinearLayout bar = UiKit.row(this);
+        TextView mascot = UiKit.label(this, "🏃", 20f);
+        mascot.setPadding(0, 0, Q.dp(this, 7), 0);
+        bar.addView(mascot);
+        LinearLayout tt = UiKit.col(this);
+        tvTitle = UiKit.label(this, "宇达步道乐跑助手", 15.5f);
+        tvTitle.setTextColor(Q.INK);
+        TextView tvVer = UiKit.label(this, getString(R.string.app_version), 10f);
         // ★ 2026-10-09 修：这里原来写死 "v1.0.9" —— 一路发到 v1.0.16 都没跟着走，
         //   标题栏显示 v1.0.9、日志里却是 getString(app_version) 的 v1.0.17，
         //   自己看自己都以为是装错了。现在两处同源（strings.xml 的 app_version）。
-        tvVer.setText(getString(R.string.app_version));
-        tvVer.setTextSize(10.5f);
-        tvVer.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
-        bar.addView(tvVer);
-        root.addView(bar);
+        tvVer.setTextColor(Q.INK2);
+        tt.addView(tvTitle);
+        tt.addView(tvVer);
+        bar.addView(tt, UiKit.weight());
+        btnMenu = Q.btn(this, "☰", Q.GRAY, 15f);
+        btnMenu.setLayoutParams(new LinearLayout.LayoutParams(Q.dp(this, 48),
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        btnMenu.setOnClickListener(v -> toggleDrawer());
+        bar.addView(btnMenu);
+        head.addView(bar);
 
-        // ---- 右上角小字：校园跑的时间窗口（★ v1.0.31，用户点名要摆在软件右上角）
+        // ---- 校园跑的时间窗口（★ v1.0.31，用户点名要摆在软件右上角）
         //   这是学校/官方的规矩，不是软件自己的限制 —— 但刷跑的人最容易忘的就是它：
         //   跑到一半过了点、或者赶着晚饭那波人挤人，成绩就白瞎了。
-        //   字号比版本号还小半级、用提示灰绿，右对齐贴在标题行正下方：
-        //   不抢标题，一进首页又一定看得见（正文用的是 strings.xml 里的原文）。
-        TextView tvRunRule = new TextView(this);
-        tvRunRule.setText(R.string.run_time_rule);
-        tvRunRule.setTextSize(10f);
-        tvRunRule.setTextColor(Color.parseColor("#66756A"));
-        tvRunRule.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-        tvRunRule.setPadding(0, 0, dp(2), dp(1));
-        root.addView(tvRunRule, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        //   正文一个字没动（还是 strings.xml 里的 R.string.run_time_rule）；
+        //   Q 版把它收进顶栏卡片里当次级小字（墨灰），不抢标题。
+        //   ★★ 2026-10-17 复查：Q 版改版时它被顺手改成了**左对齐** ——
+        //   而用户当初点名的是「摆在软件**右上角**」。UI 可以 Q 化，
+        //   但"右上角"这个位置要求不能丢，所以这里显式右对齐回去。
+        TextView tvRunRule = UiKit.label(this, getString(R.string.run_time_rule), 10f);
+        tvRunRule.setTextColor(Q.INK2);
+        tvRunRule.setGravity(Gravity.END);
+        head.addView(tvRunRule);
+        root.addView(head);
 
-        // ---- ① 身份小框（不大，两行）
+        /* ---- ① 身份状态行（★ 2026-10-17 用户第 3 条整块重做）
+         *
+         *   删掉的东西：`tvIdentBrief`（把 uid / 学号 / 令牌 / 设备号**印在首页上**
+         *   的那个框）、`btnEdit`（「✎ 手动粘贴 / 修改身份」）、以及它下面那个
+         *   可展开的 `identEditor`（EditText）。用户原话：「删掉用户标识界面
+         *   (不能手动修改用户标识)，日志中也不能输出用户标识相关内容」。
+         *
+         *   留下的：**只显示状态，不显示任何标识值** ——
+         *   「身份：已就绪 / 未取到」两种，外加一颗自动抓取按钮。
+         *   身份本身存在 {@link #identCache} 里，界面拿不到、也改不了。 */
         LinearLayout idBox = new LinearLayout(this);
         idBox.setOrientation(LinearLayout.VERTICAL);
         idBox.setBackground(round(Color.WHITE, "#D6E2DA", 8));
@@ -560,25 +586,17 @@ public class MainActivity extends Activity implements Ledao.Log {
         tvIdentBrief.setTextSize(11.5f);
         tvIdentBrief.setTextColor(Color.parseColor("#2C3A31"));
         tvIdentBrief.setLineSpacing(dp(1), 1f);
+        tvIdentBrief.setText(identStatusText());
         idBox.addView(tvIdentBrief);
 
-        btnEdit = new Button(this);
-        btnEdit.setText("✎ 手动粘贴 / 修改身份");
-        btnEdit.setTextSize(10.5f);
-        btnEdit.setTextColor(Color.parseColor("#1565C0"));
-        btnEdit.setBackgroundColor(Color.TRANSPARENT);
-        btnEdit.setPadding(0, dp(2), 0, 0);
-        btnEdit.setMinHeight(0);
-        btnEdit.setMinimumHeight(0);
-        idBox.addView(btnEdit);
-
-        // ★★ 「载入步道乐跑 → 现场取标识」（docs/24）：
+        // ★★ 「载入步道乐跑 → 现场抓身份」（docs/24）：
         //   真机的 mobileDeviceId 不落盘，但助手可以把它拉起来、当场从它进程内存里读回来。
         //   不需要抓包 / 不需要装 CA / 不需要设代理。
+        //   ★ 2026-10-17：这是**唯一**的身份来源（手动粘贴那条路已按用户要求删除）。
         btnRealId = new Button(this);
-        btnRealId.setText("📥 载入步道乐跑并取标识");
+        btnRealId.setText("📥 载入步道乐跑并抓取身份");
         btnRealId.setTextSize(10.5f);
-        btnRealId.setTextColor(Color.parseColor("#1B7A4B"));
+        btnRealId.setTextColor(Color.parseColor("#5C6B62"));
         btnRealId.setBackgroundColor(Color.TRANSPARENT);
         btnRealId.setPadding(0, dp(2), 0, 0);
         btnRealId.setMinHeight(0);
@@ -631,54 +649,45 @@ public class MainActivity extends Activity implements Ledao.Log {
          *   现在把三个真正的卡片都装进来（顺带让它们能被调成半透明）。 */
         cards.add(idBox);
 
-        // 身份编辑框（默认收起 —— 平时用不到，别占地方）
-        identEditor = buildIdentEditor();
-        identEditor.setVisibility(View.GONE);
-        root.addView(identEditor);
+        // ★ 2026-10-17：这里原来是 `identEditor = buildIdentEditor();`（可展开的手动粘贴
+        //   输入框），已按用户第 3 条整块删除 —— 连同字段 identEditor、按钮 btnEdit。
 
-        // ---- ② 状态条
-        tvStatus = new TextView(this);
-        tvStatus.setText("就绪");
-        tvStatus.setTextSize(12.5f);
-        tvStatus.setTextColor(Color.parseColor("#1B5E20"));
-        tvStatus.setBackground(round("#E8F5E9", "#C8E6C9", 6));
-        tvStatus.setPadding(dp(8), dp(5), dp(8), dp(5));
+        // ---- ② 状态条（Q 版：一条奶油胶囊 + 墨字；底色由 applyTheme 按主题主色微调）
+        tvStatus = UiKit.label(this, "就绪", 12f);
+        tvStatus.setTextColor(Q.INK);
+        tvStatus.setBackground(Q.roundRect(this, Q.PANEL2, 0, Q.R_TAG));
+        tvStatus.setPadding(Q.dp(this, 11), Q.dp(this, 7), Q.dp(this, 11), Q.dp(this, 8));
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        slp.setMargins(0, dp(6), 0, 0);
+        slp.setMargins(0, Q.dp(this, 8), 0, Q.dp(this, 2));
         root.addView(tvStatus, slp);
 
-        // ---- ③ 主按钮：开始/停止（同一个键切换）+ 自动提取
-        LinearLayout row1 = new LinearLayout(this);
-        row1.setOrientation(LinearLayout.HORIZONTAL);
+        // ---- ③ 主按钮：开始/停止（同一个键切换）+ 自动提取（Q 版糖果色胶囊）
+        LinearLayout row1 = UiKit.row(this);
         LinearLayout.LayoutParams r1lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         r1lp.setMargins(0, dp(7), 0, 0);
-        btnRun = mkBtn("▶  开始跑步", "#1B7A4B", 15f);
+        btnRun = mkBtn("▶  开始跑步", AppPrefs.hex(Q.MINT), 15f);
         btnRun.setMinHeight(dp(46));
-        btnSniff = mkBtn("📲  自动提取", "#1565C0", 15f);
+        btnSniff = mkBtn("📲  自动提取", AppPrefs.hex(Q.SKY), 15f);
         btnSniff.setMinHeight(dp(46));
         row1.addView(btnRun, weight());
         row1.addView(btnSniff, weight());
         root.addView(row1, r1lp);
 
         // ---- ④ 次按钮一排（安装证书 / 设置代理 已按要求移除，挪进侧边栏）
-        LinearLayout row2 = new LinearLayout(this);
-        row2.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout row2 = UiKit.row(this);
         LinearLayout.LayoutParams r2lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         r2lp.setMargins(0, dp(5), 0, 0);
-        btnClear = mkBtn("🧹  清空日志", "#616161", 12f);
-        btnCopyLog = mkBtn("📋  复制日志", "#37474F", 12f);
+        btnClear = mkBtn("🧹  清空日志", AppPrefs.hex(Q.GRAY), 12f);
+        btnCopyLog = mkBtn("📋  复制日志", AppPrefs.hex(Q.SKY), 12f);
         row2.addView(btnClear, weight());
         row2.addView(btnCopyLog, weight());
         root.addView(row2, r2lp);
 
-        // ---- ⑤ 跑步参数：系统自动 / 手动 两种模式
-        LinearLayout param = new LinearLayout(this);
-        param.setOrientation(LinearLayout.VERTICAL);
-        param.setBackground(round(Color.WHITE, "#D6E2DA", 8));
-        param.setPadding(dp(9), dp(7), dp(9), dp(7));
+        // ---- ⑤ 跑步参数：Q 版白圆角卡（里面嵌一块奶油次级块）
+        LinearLayout param = Q.card(this);
         LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         plp.setMargins(0, dp(6), 0, 0);
@@ -686,27 +695,25 @@ public class MainActivity extends Activity implements Ledao.Log {
         // ★ 2026-10-07 界面优化 #1：删除「手动设置」。
         //   跑步参数一律由系统自动设置 —— 不再给按钮、也不再给输入框，
         //   点「▶ 开始跑步」就是自动模式。里程/配速的硬约束仍在 Ledao 里兜底。
-        tvAutoInfo = new TextView(this);
-        tvAutoInfo.setTextSize(10.5f);
-        tvAutoInfo.setTextColor(Color.parseColor("#37474F"));
-        tvAutoInfo.setLineSpacing(dp(2), 1f);
-        tvAutoInfo.setPadding(dp(2), dp(2), dp(2), dp(2));
-        param.addView(tvAutoInfo);
+        LinearLayout paramSoft = Q.soft(this);
+        tvAutoInfo = UiKit.label(this, "", 10.5f);
+        tvAutoInfo.setTextColor(Q.INK);
+        tvAutoInfo.setLineSpacing(Q.dp(this, 2), 1f);
+        tvAutoInfo.setPadding(Q.dp(this, 2), Q.dp(this, 2), Q.dp(this, 2), Q.dp(this, 2));
+        paramSoft.addView(tvAutoInfo);
+        param.addView(paramSoft);
         root.addView(param, plp);
         cards.add(param);          // ★ 第 5 条：参数框也要跟着主题/背景照片走
 
-        // ---- ⑥ 跑步路线（可收起）
-        LinearLayout routeBox = new LinearLayout(this);
-        routeBox.setOrientation(LinearLayout.VERTICAL);
-        routeBox.setBackground(round(Color.WHITE, "#D6E2DA", 8));
+        // ---- ⑥ 跑步路线（可收起；Q 版白圆角卡）
+        LinearLayout routeBox = Q.card(this);
         LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         rlp.setMargins(0, dp(6), 0, 0);
 
-        tvRouteHead = new TextView(this);
-        tvRouteHead.setTextSize(12f);
-        tvRouteHead.setTextColor(Color.parseColor("#1B5E20"));
-        tvRouteHead.setPadding(dp(9), dp(7), dp(9), dp(7));
+        tvRouteHead = UiKit.label(this, "", 12.5f);
+        tvRouteHead.setTextColor(Q.INK);
+        tvRouteHead.setPadding(Q.dp(this, 2), Q.dp(this, 4), Q.dp(this, 2), Q.dp(this, 7));
         routeBox.addView(tvRouteHead);
 
         routeBody = new LinearLayout(this);
@@ -729,17 +736,17 @@ public class MainActivity extends Activity implements Ledao.Log {
         LinearLayout mapBar = new LinearLayout(this);
         mapBar.setOrientation(LinearLayout.HORIZONTAL);
         mapBar.setPadding(0, dp(4), 0, 0);
-        Button bIn = mkBtn("＋", "#455A64", 15f);
-        Button bOut = mkBtn("－", "#455A64", 15f);
-        Button bFit = mkBtn("全校", "#455A64", 11.5f);
-        Button bMe = mkBtn("定位", "#1565C0", 11.5f);
+        Button bIn = mkBtn("＋", AppPrefs.hex(Q.GRAY), 15f);
+        Button bOut = mkBtn("－", AppPrefs.hex(Q.GRAY), 15f);
+        Button bFit = mkBtn("全校", AppPrefs.hex(Q.GRAY), 11.5f);
+        Button bMe = mkBtn("定位", AppPrefs.hex(Q.SKY), 11.5f);
         // ★ 路网底纹开关（2026-10-09）：路线是在这张图上随机游走出来的，
         //   开着它才看得懂"为什么这条线要绕这么一下"。嫌乱就关掉。
-        Button bNet = mkBtn("路网", "#1B7A4B", 11.5f);
+        Button bNet = mkBtn("路网", AppPrefs.hex(Q.MINT), 11.5f);
         /* ★★★ v1.0.33（用户第 3 条）：「换路线」—— 当场换一条预览路线。
          *   以前预览路线只在进软件时生成一次（跑完一局再抽下一条），
          *   想换一条只能退出去重进。 */
-        Button bNew = mkBtn("换路线", "#B26A00", 11.5f);
+        Button bNew = mkBtn("换路线", AppPrefs.hex(Q.LEMON), 11.5f);
         bIn.setOnClickListener(v -> map.zoomBy(0.7));
         bOut.setOnClickListener(v -> map.zoomBy(-0.7));
         bFit.setOnClickListener(v -> map.fitRoute());
@@ -765,10 +772,9 @@ public class MainActivity extends Activity implements Ledao.Log {
         mapBar.addView(bNew, weight());
         routeBody.addView(mapBar);
 
-        tvRouteInfo = new TextView(this);
-        tvRouteInfo.setTextSize(9.5f);
-        tvRouteInfo.setTextColor(Color.parseColor("#66756A"));
-        tvRouteInfo.setPadding(dp(2), dp(4), 0, dp(2));
+        tvRouteInfo = UiKit.label(this, "", 10f);
+        tvRouteInfo.setTextColor(Q.INK2);
+        tvRouteInfo.setPadding(Q.dp(this, 2), Q.dp(this, 4), 0, Q.dp(this, 2));
         tvRouteInfo.setText("两指缩放 · 单指拖动 · 点蓝色标注跳回当前位置并放大 · 点「换路线」换一条");
         routeBody.addView(tvRouteInfo);
         routeBox.addView(routeBody);
@@ -782,18 +788,17 @@ public class MainActivity extends Activity implements Ledao.Log {
                     .putBoolean("routeopen", routeOpen).apply();
         });
 
-        // ---- ⑦ 日志框（占满剩余空间）
-        LinearLayout logBox = new LinearLayout(this);
-        logBox.setOrientation(LinearLayout.VERTICAL);
+        // ---- ⑦ 日志框（占满剩余空间；Q 版：白圆角卡 + 奶油软底日志区）
+        LinearLayout logBox = Q.card(this);
         LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
         llp.setMargins(0, dp(6), 0, 0);
 
         tvLog = new TextView(this);
         tvLog.setTextSize(10.5f);
-        tvLog.setTextColor(Color.parseColor("#1F2A22"));
-        tvLog.setBackgroundColor(Color.WHITE);
-        tvLog.setPadding(dp(8), dp(6), dp(8), dp(6));
+        tvLog.setTextColor(Q.INK);
+        tvLog.setBackgroundColor(Q.PANEL2);
+        tvLog.setPadding(Q.dp(this, 8), Q.dp(this, 6), Q.dp(this, 8), Q.dp(this, 6));
         tvLog.setTypeface(android.graphics.Typeface.MONOSPACE);
         tvLog.setMovementMethod(new ScrollingMovementMethod());
         // 用户往上翻的时候别自动滚到底
@@ -802,11 +807,12 @@ public class MainActivity extends Activity implements Ledao.Log {
             return false;
         });
         scLog = new ScrollView(this);
-        scLog.setBackground(round(Color.WHITE, "#D6E2DA", 8));
+        scLog.setBackground(Q.roundRect(this, Q.PANEL2, 0, 14));
         scLog.addView(tvLog);
         logBox.addView(scLog, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         root.addView(logBox, llp);
+        cards.add(logBox);         // ★ Q 版：日志卡也跟着主题/背景照片走（有照片时半透明）
 
         // ---- 事件
         btnRun.setOnClickListener(v -> toggleRun());
@@ -819,11 +825,7 @@ public class MainActivity extends Activity implements Ledao.Log {
             logBuf.setLength(0);
             tvLog.setText("");
         });
-        btnEdit.setOnClickListener(v -> {
-            boolean show = identEditor.getVisibility() != View.VISIBLE;
-            identEditor.setVisibility(show ? View.VISIBLE : View.GONE);
-            btnEdit.setText(show ? "▲ 收起编辑框" : "✎ 手动粘贴 / 修改身份");
-        });
+        // ★ 2026-10-17：`btnEdit`（「✎ 手动粘贴 / 修改身份」→ 展开输入框）已按用户要求删除。
 
         // ---- 侧边栏（放在最后，盖在主界面之上）
         buildDrawer();
@@ -858,7 +860,7 @@ public class MainActivity extends Activity implements Ledao.Log {
             View chip = new View(this);
             GradientDrawable g = new GradientDrawable();
             g.setColor(Color.parseColor(th[3]));
-            g.setCornerRadius(dp(7));
+            g.setCornerRadius(Q.dp(this, Q.R_TAG));
             chip.setBackground(g);
             row.addView(chip, new LinearLayout.LayoutParams(dp(28), dp(28)));
             TextView t = new TextView(this);
@@ -913,7 +915,7 @@ public class MainActivity extends Activity implements Ledao.Log {
             View chip = new View(this);
             GradientDrawable g = new GradientDrawable();
             g.setColor(Color.parseColor(c));
-            g.setCornerRadius(dp(20));
+            g.setCornerRadius(Q.dp(this, Q.R_PILL));
             chip.setBackground(g);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(36), dp(36));
             lp.setMargins(dp(3), dp(6), dp(3), dp(6));
@@ -1013,14 +1015,14 @@ public class MainActivity extends Activity implements Ledao.Log {
         dev.setLineSpacing(dp(2), 1f);
         dev.setText(DEV_TEXT);
         drawerPanel.addView(dev);
-        // ★ 第 3 条（2026-10-10）：把留言里的网址 / QQ 号 / 邮箱做成可复制的小按键。
+        // ★ 第 3 条（2026-10-10）：把留言里的联系方式做成可复制的小按键。
         //   和启动时那个留言弹窗**共用同一份**（DevNote.copyRow），两处永远一致 ——
         //   很多用户第一次就把弹窗勾成「不再弹出」，之后只能从侧边栏找。
+        //   ★ 2026-10-17：留言只剩 QQ 一个联系方式，所以这一行现在只有一颗键。
         drawerPanel.addView(DevNote.copyRow(this));
-        // ★ 2026-10-10 用户第 6 条：侧边栏**最后**放煮波的收款码（一句话 + 图）。
-        //   只放这儿、不放启动弹窗 —— 那边首次要停够 30 秒，小屏再加一张 230dp 的图
-        //   会把「关闭」挤出屏幕。文案与文件名都在 DevNote 里，测试盯着那一处。
-        drawerPanel.addView(DevNote.tipBlock(this));
+        /* ★ 2026-10-17 用户要求「删掉打赏相关内容」：这里原来是
+         *   `drawerPanel.addView(DevNote.tipBlock(this));` —— 一句话 + 支付宝收款码。
+         *   整块删掉（DevNote 里的 tipBlock / TIP_TEXT / TIP_QR 也一并删除）。 */
 
         FrameLayout.LayoutParams dlp = new FrameLayout.LayoutParams(
                 drawerW, ViewGroup.LayoutParams.MATCH_PARENT);
@@ -1031,15 +1033,16 @@ public class MainActivity extends Activity implements Ledao.Log {
     }
 
     private TextView section(String s) {
-        TextView t = new TextView(this);
-        t.setText(s);
-        t.setTextSize(13.5f);
+        // Q 版小标题：墨色，比正文大半级（侧边栏里的「🎨 主题」「🏃 水滴颜色」…）
+        TextView t = UiKit.label(this, s, 13.5f);
+        t.setTextColor(Q.INK);
         t.setPadding(0, dp(16), 0, dp(6));
         return t;
     }
 
     private Button drawerBtn(String s) {
-        Button b = mkBtn(s, "#455A64", 12f);
+        // Q 版：侧边栏的按钮和首页一样是糖果色胶囊（mkBtn 统一上色）
+        Button b = mkBtn(s, AppPrefs.hex(Q.GRAY), 12f);
         b.setMinHeight(dp(40));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -1085,57 +1088,103 @@ public class MainActivity extends Activity implements Ledao.Log {
         }
     }
 
+    // ==================================================================
+    //  ★★★ 2026-10-17 Q 版皮肤（皮肤本体：Q.java / UiKit.java，与 app3、app4 同一份）
+    //
+    //  形状与中性色统一走 Q：奶油底 · 白圆角卡 · 墨色字 · 糖果色胶囊。
+    //  侧边栏那 5 套主题保留两个自由度，免得主题变成"点了没反应"：
+    //    · 主色 —— 老主题的深绿 / 深蓝一律映射成糖果色（见 candyOf）；
+    //    · 明暗 —— 「夜间黑」仍然是真的深色底（Q 调色板只有浅色一套）。
+    //  这些取值全是纯运算（AppPrefs 那一套），一个 Android API 都不碰。
+    // ==================================================================
+    /** 当前主题是不是深色底（「夜间黑」） */
+    private boolean qDark() {
+        return AppPrefs.dark(AppPrefs.bg(this));
+    }
+
+    /** 页面底：Q 奶油底；深色主题保留它自己的深底 */
+    private int qBg() {
+        return qDark() ? AppPrefs.bg(this) : Q.BG;
+    }
+
+    /** 卡片底：Q 白；深色主题走 AppPrefs 的白色叠加；铺了照片一律半透明（第 5 条） */
+    private int qPanel(boolean hasBg) {
+        if (qDark()) return AppPrefs.panel(AppPrefs.bg(this), hasBg);
+        return hasBg ? AppPrefs.alpha(Q.PANEL, 0.62f) : Q.PANEL;
+    }
+
+    /** 卡片描边：Q 的淡褐描边（深色主题换成一层很淡的白） */
+    private int qStroke(boolean hasBg) {
+        if (qDark()) return AppPrefs.alpha(Q.PANEL, hasBg ? 0.14f : 0.22f);
+        return AppPrefs.alpha(Q.STROKE, hasBg ? 0.45f : 1f);
+    }
+
+    /** 主文字：Q 墨色；深色主题自动换成浅字（不然看不见） */
+    private int qInk() {
+        return qDark() ? AppPrefs.onColor(AppPrefs.bg(this)) : Q.INK;
+    }
+
+    /** 主色：老主题的深绿 / 深蓝 → Q 糖果色（已经是糖果色的原样保留） */
+    private int qAccent() {
+        int acc = AppPrefs.accent(this);
+        return isCandy(acc) ? acc : candyOf(acc);
+    }
+
     private void applyTheme() {
-        int bg = AppPrefs.bg(this), fg = AppPrefs.fg(this), acc = AppPrefs.accent(this);
+        int bg = AppPrefs.bg(this);
         String bgImg = AppPrefs.bgImage(this);
         /* ★★★ 2026-10-10 用户第 5 条：「这个按键还有框有点挡背景，
          *   能不能在设置背景后改成半透明的。」
          *   —— 判据只有这一个：**铺了背景照片**。没铺照片时一切都是原来的不透明，
          *   免得纯色主题下反而变得发灰、字发虚。 */
         final boolean hasBg = bgImg != null && bgImg.length() > 0;
+        final int acc = qAccent();
 
-        contentRoot.setBackgroundColor(bg);
+        contentRoot.setBackgroundColor(qBg());
         if (hasBg) {
             try {
                 Bitmap bm = BitmapFactory.decodeFile(bgImg);
                 if (bm != null) contentRoot.setBackground(new BitmapDrawable(getResources(), bm));
             } catch (Throwable ignore) { }
         }
+        /* ★★★ 2026-10-17 Q 版皮肤：形状（圆角/胶囊/描边）和中性色（奶油底/白卡/墨字）
+         *   一律走 Q，主题只保留两个自由度 —— 「主色」映射成糖果色、「明暗」决定
+         *   夜间黑仍然是深底浅字。这样既换成了和 app3/app4 同一套皮肤，
+         *   又不会把侧边栏那 5 套主题弄成"点了没反应"。 */
         tvTitle.setTextColor(acc);
-        btnMenu.setTextColor(fg);
-        tvIdentBrief.setTextColor(fg);
-        btnEdit.setTextColor(acc);
-        tvLog.setTextColor(fg);
+        /* ★ 下面这几处的字色是**固定**墨色 / 自动选色，不是 qInk()：
+         *   ☰ 是浅灰胶囊、状态条是奶油胶囊、日志区是奶油底 —— 底永远是浅色，
+         *   深色主题下若跟着换成浅字就看不清了（Q.on 那套"按底选字"才是对的口径）。 */
+        btnMenu.setTextColor(Q.on(Q.GRAY));
+        tvIdentBrief.setTextColor(qInk());
+        /* ★ 2026-10-17：这两行原来是 `btnEdit.setTextColor(acc)` 与给 `etIdent` 上色 ——
+         *   那两个控件（手动修改身份）已按用户第 3 条删除。 */
+        tvLog.setTextColor(Q.INK);
         tvRouteHead.setTextColor(acc);
         if (scLog != null) {
-            scLog.setBackground(round(AppPrefs.panelStrong(bg, hasBg), null, 10));
+            scLog.setBackground(Q.roundRect(this,
+                    hasBg ? AppPrefs.alpha(Q.PANEL2, 0.77f) : Q.PANEL2, 0, 14));
         }
-        // ---- 卡片（身份框 / 参数框 / 路线框）
-        int panelCol = AppPrefs.panel(bg, hasBg);
-        int lineCol = AppPrefs.alpha(AppPrefs.darken(bg, 0.88f), hasBg ? 0.45f : 1f);
+        // ---- 卡片（身份状态行 / 参数框 / 路线框 / 日志框）：Q 版白圆角 + 淡描边
+        int panelCol = qPanel(hasBg);
+        int lineCol = qStroke(hasBg);
         for (View c : cards) {
             if (c == contentRoot) continue;
-            c.setBackground(round(panelCol, AppPrefs.hex(lineCol), 10));
+            c.setBackground(Q.roundRect(this, panelCol, lineCol, Q.R_CARD));
         }
-        if (etIdent != null) {
-            etIdent.setBackground(round(AppPrefs.panelStrong(bg, hasBg), AppPrefs.hex(lineCol), 8));
-            etIdent.setTextColor(fg);
-        }
-        tvStatus.setBackground(round(String.format("#%06X",
-                AppPrefs.blend(acc, bg, 0.16f) & 0xFFFFFF),
-                String.format("#%06X", AppPrefs.blend(acc, bg, 0.36f) & 0xFFFFFF), 7));
-        tvStatus.setTextColor(AppPrefs.onColor(AppPrefs.blend(acc, bg, 0.16f)));
+        tvStatus.setBackground(Q.roundRect(this, Q.mix(Q.PANEL2, acc, 0.22f), 0, Q.R_TAG));
+        tvStatus.setTextColor(Q.INK);
 
         /* ---- 按钮：★ 第 5 条就是冲着它们来的（"这个按键…有点挡背景"）。
          *   颜色不是写死在这里，而是 mkBtn 时记在 tag 上的原色 —— 这样地图
          *   「＋/－/全校/定位/路网」、侧边栏按钮、开始/停止按钮全都一起变，
-         *   不会漏掉哪一个。 */
+         *   不会漏掉哪一个。Q 版把它们统一刷成糖果色胶囊（见 paintBtn）。 */
         btnAlpha = hasBg ? 0.70f : 1f;
         repaintButtons();
         if (drawerHolder != null) {
             // 侧边栏是一整块贴边面板，透太多会跟底下的卡片叠成一团，留 88% 就够
-            drawerHolder.setBackgroundColor(hasBg ? AppPrefs.alpha(bg, 0.88f) : bg);
-            recolorDrawer(drawerPanel, fg);
+            drawerHolder.setBackgroundColor(hasBg ? AppPrefs.alpha(Q.BG, 0.88f) : Q.BG);
+            recolorDrawer(drawerPanel, qInk());
         }
         applyMode();
         String spec = AppPrefs.marker(this);
@@ -1170,27 +1219,16 @@ public class MainActivity extends Activity implements Ledao.Log {
         return v == null || v.length() == 0;
     }
 
-    private View buildIdentEditor() {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(0, dp(4), 0, 0);
-        etIdent = new EditText(this);
-        etIdent.setHint("uid=…&token=…&refresh_token=…&mobileDeviceId=…\n"
-                + "（留空即可：点「自动提取」或直接「开始跑步」会自动抓）");
-        etIdent.setTextSize(11f);
-        etIdent.setMinLines(3);
-        etIdent.setMaxLines(5);
-        etIdent.setGravity(Gravity.TOP | Gravity.START);
-        etIdent.setBackground(round(Color.WHITE, "#D6E2DA", 8));
-        etIdent.setPadding(dp(8), dp(6), dp(8), dp(6));
-        etIdent.addTextChangedListener(new android.text.TextWatcher() {
-            public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
-            public void onTextChanged(CharSequence s, int a, int b, int c) { }
-            public void afterTextChanged(android.text.Editable s) { refreshIdentBox(); }
-        });
-        box.addView(etIdent);
-        return box;
-    }
+    /* ★★★ 2026-10-17 用户第 3 条：「删掉用户标识界面(不能手动修改用户标识)」。
+     *
+     *   这里原来是 `private View buildIdentEditor()` —— 一个多行 EditText，
+     *   hint 就写着 `uid=…&token=…&refresh_token=…&mobileDeviceId=…`，
+     *   让人手动粘贴/修改身份。整块删除：身份只能由「📥 载入步道乐跑」自动抓取，
+     *   存进 {@link #identCache}，界面上既看不到也改不了。
+     *
+     *   连带删掉的：字段 `etIdent` / `identEditor`、按钮 `btnEdit`、
+     *   显示框 `tvIdentBrief` 的**内容刷新**（现在只显示"就绪/未取到"）。
+     */
 
     private void applyRouteOpen() {
         if (routeBody == null || tvRouteHead == null) return;
@@ -1265,7 +1303,11 @@ public class MainActivity extends Activity implements Ledao.Log {
                 log("══════ 下面是从磁盘捞回来的日志（files/" + RunLog.NAME
                         + (writing ? "，这一场还在写" : "，上一次留下的") + "）══════");
                 for (String ln : tail.split("\n")) {
-                    if (ln.length() > 0) logLine(ln, false);   // ★ 不再写回磁盘，免得越滚越多
+                    /* ★ 2026-10-17：这里要**显式再脱敏一次**。磁盘上那份 run.log
+                     *   可能是**旧版本**（源头还没脱敏时）留下的，里面就躺着 uid/令牌原文；
+                     *   logLine() 里虽然也会脱一次，但这条路径靠的是"顺带"，
+                     *   而它恰恰是唯一会把**历史数据**重新搬上屏幕的路 —— 单独挡一道。 */
+                    if (ln.length() > 0) logLine(maskSensitive(ln), false);   // ★ 不写回磁盘，免得越滚越多
                 }
                 log("══════ 磁盘日志到此为止 ══════");
                 log("");
@@ -1325,18 +1367,16 @@ public class MainActivity extends Activity implements Ledao.Log {
             LinearLayout box = new LinearLayout(this);
             box.setOrientation(LinearLayout.VERTICAL);
 
-            Button b1 = new Button(this);
-            b1.setText(MiniWindow.allowed(this)
+            Button b1 = qBtnWide(MiniWindow.allowed(this)
                     ? "① 悬浮窗权限：已经有了 ✅（点这里再看一眼系统那一页）"
-                    : "① 开「悬浮窗」权限（系统页面，点一下「允许」就行）");
+                    : "① 开「悬浮窗」权限（系统页面，点一下「允许」就行）", Q.SKY, 12.5f);
             b1.setOnClickListener(v -> {
                 MiniWindow.requestPermission(this);
                 log("[小窗] 已打开系统的「悬浮窗」权限页 —— 找到助手，允许「显示在其他应用上层」。");
             });
             box.addView(b1);
 
-            Button b2 = new Button(this);
-            b2.setText("② 先看看它长什么样（在右上角挂出来）");
+            Button b2 = qBtnWide("② 先看看它长什么样（在右上角挂出来）", Q.MINT, 12.5f);
             b2.setOnClickListener(v -> {
                 if (!MiniWindow.allowed(this)) {
                     Toast.makeText(this, "还没有悬浮窗权限 —— 先点第 ① 个按钮",
@@ -1352,10 +1392,9 @@ public class MainActivity extends Activity implements Ledao.Log {
             });
             box.addView(b2);
 
-            final Button b3 = new Button(this);
-            b3.setText(MiniWindow.prefOn(this)
+            final Button b3 = qBtnWide(MiniWindow.prefOn(this)
                     ? "③ 关掉「切走自动缩窗」（现在：开）"
-                    : "③ 打开「切走自动缩窗」（现在：关）");
+                    : "③ 打开「切走自动缩窗」（现在：关）", Q.LEMON, 12.5f);
             b3.setOnClickListener(v -> {
                 boolean on = !MiniWindow.prefOn(this);
                 MiniWindow.setPrefOn(this, on);
@@ -1367,8 +1406,8 @@ public class MainActivity extends Activity implements Ledao.Log {
             });
             box.addView(b3);
 
-            Button b4rom = new Button(this);
-            b4rom.setText("④ 万一这台机器连小窗也冻：打开系统的「自启动 / 后台活动」页");
+            Button b4rom = qBtnWide("④ 万一这台机器连小窗也冻：打开系统的「自启动 / 后台活动」页",
+                    Q.GRAY, 12.5f);
             b4rom.setOnClickListener(v -> {
                 String p = openRomBackgroundPage();
                 log(p == null ? "[小窗] 没打开任何系统页面" : "[小窗] 打开的是：" + p);
@@ -1377,8 +1416,7 @@ public class MainActivity extends Activity implements Ledao.Log {
             });
             box.addView(b4rom);
 
-            Button b4 = new Button(this);
-            b4.setText("⑤ 把状态写进日志（再点「📋 复制日志」发我）");
+            Button b4 = qBtnWide("⑤ 把状态写进日志（再点「📋 复制日志」发我）", Q.SKY, 12.5f);
             b4.setOnClickListener(v -> {
                 log("[小窗] ── 状态快照 ──");
                 log("   " + MiniWindow.statusLine(this));
@@ -1396,6 +1434,7 @@ public class MainActivity extends Activity implements Ledao.Log {
 
             TextView st = new TextView(this);
             st.setTextSize(12.5f);
+            st.setTextColor(Q.INK2);                 // ★ Q 版：说明用次级墨灰
             st.setLineSpacing(dp(3), 1.15f);
             st.setPadding(dp(2), dp(10), dp(2), dp(2));
             st.setText("—— 它是干什么的 ——\n"
@@ -1419,12 +1458,13 @@ public class MainActivity extends Activity implements Ledao.Log {
             sc.setLayoutParams(new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, Math.min(maxH, dp(470))));
 
-            new android.app.AlertDialog.Builder(this)
+            android.app.AlertDialog mwDlg = new android.app.AlertDialog.Builder(this)
                     .setTitle("🪟 迷你小窗（切走时缩到右上角）")
                     .setView(sc)
                     .setNegativeButton("关闭", null)
-                    .create()
-                    .show();
+                    .create();
+            mwDlg.show();
+            Q.style(this, mwDlg);     // ★ Q 版：系统方角弹窗换成圆角白卡（必须 show() 之后）
         } catch (Throwable t) {
             logFail("打开迷你小窗说明", t);
         }
@@ -1449,7 +1489,7 @@ public class MainActivity extends Activity implements Ledao.Log {
         if (RUN_ACTIVE) return;                              // 跑步中不添乱
         long now = System.currentTimeMillis();
         if (now - termFetchedAt < 60000) return;             // 一分钟内不重复问
-        final String raw = etIdent == null ? "" : etIdent.getText().toString().trim();
+        final String raw = identCache == null ? "" : identCache.trim();
         if (raw.length() == 0) {
             log("[学期] 手上还没有身份，学期次数先不查（" + why + "）—— 取到身份后会自动补上");
             return;
@@ -1629,7 +1669,7 @@ public class MainActivity extends Activity implements Ledao.Log {
             } else {
                 TextView bad = new TextView(this);
                 bad.setTextSize(13f);
-                bad.setTextColor(Color.parseColor("#C62828"));
+                bad.setTextColor(Q.DANGER);       // ★ Q 版：危险红
                 bad.setText("⚠ 这张图解不出来（可能不是图片，或者已经损坏）。\n"
                         + "跑步时上传它大概率会失败，建议点「更换」。");
                 box.addView(bad);
@@ -1637,6 +1677,7 @@ public class MainActivity extends Activity implements Ledao.Log {
 
             TextView info = new TextView(this);
             info.setTextSize(12.5f);
+            info.setTextColor(Q.INK);             // ★ Q 版：墨色字
             info.setLineSpacing(dp(2), 1f);
             info.setText("文件  " + f.getAbsolutePath() + "\n"
                     + "大小  " + (f.length() / 1024) + " KB"
@@ -1657,8 +1698,7 @@ public class MainActivity extends Activity implements Ledao.Log {
              *   用户会以为软件坏了（12:22、13:11 两次事故都是这么卡住的）。 */
             final android.app.AlertDialog[] holder = new android.app.AlertDialog[1];
             if (diag.length() > 0) {
-                Button fix = new Button(this);
-                fix.setText("🔧 试试修复这张（能修就修，原图留一份）");
+                Button fix = qBtnWide("🔧 试试修复这张（能修就修，原图留一份）", Q.LEMON, 12.5f);
                 fix.setOnClickListener(v -> {
                     if (holder[0] != null) holder[0].dismiss();
                     repairFacePhoto();
@@ -1666,8 +1706,7 @@ public class MainActivity extends Activity implements Ledao.Log {
                 box.addView(fix);
             }
             if (okF.exists() && okF.length() > 0) {
-                Button useOk = new Button(this);
-                useOk.setText("↩ 用回上次通过核验的那张");
+                Button useOk = qBtnWide("↩ 用回上次通过核验的那张", Q.MINT, 12.5f);
                 useOk.setOnClickListener(v -> {
                     if (holder[0] != null) holder[0].dismiss();
                     useFaceOkPhoto();
@@ -1684,6 +1723,7 @@ public class MainActivity extends Activity implements Ledao.Log {
                     .create();
             holder[0] = dlg;
             dlg.show();
+            Q.style(this, dlg);       // ★ Q 版：预览弹窗也换成圆角白卡
         } catch (Throwable t) {
             logFail("预览人脸照片", t);
         }
@@ -2131,30 +2171,27 @@ public class MainActivity extends Activity implements Ledao.Log {
     }
 
     /** 身份摘要小框 —— 只显示人看得懂的几项，令牌永远只露 6 位 */
+    /**
+     * ★★★ 2026-10-17 用户第 3 条：这一格**只显示状态，不显示任何标识值**。
+     *
+     * <p>原来它叫 {@code refreshIdentBox()}，会把 uid / 学号 / 校区 / 令牌前几位 /
+     *   设备号前 8 位 / 机型**全部印在首页上** —— 首页一截图这些就都出去了。
+     *   现在只回答一个问题：「身份取到了没有」。
+     *
+     * <p>另外它**不再解析身份串**：解析意味着把 uid/token 读进界面层，
+     *   而界面层是会被截图、会被分享的。身份只活在 {@link #identCache} 与
+     *   {@code Ledao.ident()} 里。
+     */
+    private String identStatusText() {
+        return identCache != null && identCache.trim().length() > 0
+                ? "身份：已就绪 ✅\n（已取到，不再显示具体内容；点下面那颗键可重新抓取）"
+                : "身份：未取到\n点下面那颗「📥 载入步道乐跑并抓取身份」取一次";
+    }
+
+    /** 身份状态变了就刷一下那一格（只刷状态，不刷值） */
     private void refreshIdentBox() {
-        if (tvIdentBrief == null || etIdent == null) return;
-        TreeMap<String, String> kv = new TreeMap<>();
-        String raw = etIdent.getText().toString().trim();
-        for (String seg : raw.split("[&\\n]")) {
-            int i = seg.indexOf('=');
-            if (i > 0) kv.put(seg.substring(0, i).trim(), seg.substring(i + 1).trim());
-        }
-        StringBuilder sb = new StringBuilder();
-        if (kv.isEmpty()) {
-            sb.append("身份：未提取\n点「▶ 开始跑步」或「📲 自动提取」自动获取");
-        } else {
-            sb.append("uid ").append(or(kv.get("uid"), "?"));
-            if (kv.containsKey("student_num")) sb.append("   学号 ").append(kv.get("student_num"));
-            sb.append("   校区 ").append(or(kv.get("school_id"), "?"));
-            sb.append('\n');
-            sb.append("令牌 ").append(shortTok(kv.get("token")));
-            sb.append(kv.containsKey("refresh_token") ? "   续期✓" : "   续期✗");
-            String dev = kv.get("mobileDeviceId");
-            if (dev != null && dev.length() >= 8) sb.append("   设备 ").append(dev.substring(0, 8)).append("…");
-            String mdl = kv.get("mobileModel");
-            if (mdl != null && mdl.length() > 0) sb.append("   ").append(mdl);
-        }
-        tvIdentBrief.setText(sb.toString());
+        if (tvIdentBrief == null) return;
+        tvIdentBrief.setText(identStatusText());
     }
 
     private static String or(String s, String d) { return s == null || s.length() == 0 ? d : s; }
@@ -2177,10 +2214,10 @@ public class MainActivity extends Activity implements Ledao.Log {
     private void setRunBtn(boolean running) {
         if (running) {
             btnRun.setText("■  停止跑步");
-            paintBtn(btnRun, "#B00020");
+            paintBtn(btnRun, AppPrefs.hex(Q.DANGER));       // Q 版：停止 = 危险红胶囊
         } else {
             btnRun.setText("▶  开始跑步");
-            paintBtn(btnRun, "#1B7A4B");
+            paintBtn(btnRun, AppPrefs.hex(Q.MINT));         // Q 版：开始 = 薄荷胶囊
         }
         btnRun.setEnabled(true);
     }
@@ -2215,7 +2252,7 @@ public class MainActivity extends Activity implements Ledao.Log {
             log(">> 已有跑步在进行中，忽略本次「开始跑步」");
             return;
         }
-        String raw = etIdent.getText().toString().trim();
+        String raw = identCache == null ? "" : identCache.trim();
         if (raw.length() == 0) {
             /* ★★★ v1.0.33（用户第 4 条）：这里原来是 `autoExtract(true)` ——
              *   会自己把步道乐跑拉起来抓身份。用户明确要求：**跳转只由
@@ -2326,16 +2363,16 @@ public class MainActivity extends Activity implements Ledao.Log {
             L.ident().put("mobileDeviceId", dev);
             log("   [设备号] 现有值缺失，退回 .system_id.log：" + dev);
             log("            ⚠ 这不是真机的 mobileDeviceId，只是兜底；"
-                    + "有条件请用「📥 载入步道乐跑并取标识」现场取一个真的");
+                    + "有条件请用「📥 载入步道乐跑并抓取身份」现场取一个真的");
         } else {
             // ★★ 身份里完全没有设备号：不再拿 .system_id.log 的兜底值硬开跑
-            //    （那个值真机从没用过），而是让用户点「📥 载入步道乐跑并取标识」
+            //    （那个值真机从没用过），而是让用户点「📥 载入步道乐跑并抓取身份」
             //    现场取一个（★ v1.0.33：不再自动跳过去 —— 见下面那段注释）。
             log("   ⚠ 身份里没有 mobileDeviceId —— 这一步必须去步道乐跑现场取一个");
-            log("      → 请点「📥 载入步道乐跑并取标识」（它会带你走完这一步），"
+            log("      → 请点「📥 载入步道乐跑并抓取身份」（它会带你走完这一步），"
                     + "取到之后再点「▶ 开始跑步」。");
-            setStatus("⚠ 先点「📥 载入步道乐跑并取标识」，再点「▶ 开始跑步」");
-            Toast.makeText(this, "身份里缺设备号：先点「📥 载入步道乐跑并取标识」",
+            setStatus("⚠ 先点「📥 载入步道乐跑并抓取身份」，再点「▶ 开始跑步」");
+            Toast.makeText(this, "身份里缺设备号：先点「📥 载入步道乐跑并抓取身份」",
                     Toast.LENGTH_LONG).show();
             pendingAutorun = false;
             return;
@@ -2529,7 +2566,7 @@ public class MainActivity extends Activity implements Ledao.Log {
                       + "\n原因：" + Err.hint(t),
                         "先原样再点一次「▶ 开始跑步」—— 有些错误是服务端偶发的，重跑就好。\n"
                       + "如果每次都停在同一个地方，点下面的按钮复制日志，"
-                      + "发到 " + DevNote.EMAIL + "。");
+                      + "发到 QQ " + DevNote.QQ + "。");
             } finally {
                 RUN_ACTIVE = false;
                 RUN_LEDAO = null;
@@ -2566,7 +2603,7 @@ public class MainActivity extends Activity implements Ledao.Log {
         JSONObject chk = L.call("User/User", null, 0);
         int st = chk.optInt("status");
         if (st == 1) {
-            log("   [准备] 令牌可用 ✅  token=" + shortTok(L.ident().get("token")));
+            log("   [准备] 令牌可用 ✅（用户要求：日志里不打令牌，只报可用）");
             log("   [准备] " + (L.ident().containsKey("refresh_token")
                     ? "已持有续期令牌，途中被顶下线能自动救回来" : "⚠ 无续期令牌"));
             return true;
@@ -2603,7 +2640,9 @@ public class MainActivity extends Activity implements Ledao.Log {
             }
             final String txt = sb.toString();
             getSharedPreferences(PREF, MODE_PRIVATE).edit().putString("ident", txt).apply();
-            ui.post(() -> { etIdent.setText(txt); refreshIdentBox(); });
+            /* ★ 2026-10-17：落点是**内部缓存**（界面上没有输入框了）；
+             *   只刷"就绪/未取到"那一行状态，不把内容显示出来。 */
+            ui.post(() -> { identCache = txt; persistIdentCache(); refreshIdentBox(); });
         } catch (Exception ignore) { }
     }
 
@@ -2621,12 +2660,17 @@ public class MainActivity extends Activity implements Ledao.Log {
     }
 
     /**
-     * 把身份串里的某一项就地改掉（保留其它字段，不动用户粘贴过的内容），
+     * 把身份串里的某一项就地改掉（保留其它字段），
      * 同时落进 SharedPreferences，并更新正在跑的那个 Ledao 会话。
+     *
+     * <p>★ 2026-10-17：来源从 `etIdent.getText()` 换成内部缓存 {@link #identCache}；
+     *   「不动用户粘贴过的内容」这句话作废了 —— 现在没有用户粘贴这条路，
+     *   串只由自动抓取写入（手机号那段是抓完补 mobileDeviceId 用的）。
      */
     private void setIdentField(String k, String v) {
         TreeMap<String, String> kv = new TreeMap<>();
-        for (String seg : etIdent.getText().toString().trim().split("[&\\n]")) {
+        String src = identCache == null ? "" : identCache.trim();
+        for (String seg : src.split("[&\\n]")) {
             int i = seg.indexOf('=');
             if (i > 0) kv.put(seg.substring(0, i).trim(), seg.substring(i + 1).trim());
         }
@@ -2637,10 +2681,22 @@ public class MainActivity extends Activity implements Ledao.Log {
             sb.append(kk).append('=').append(kv.get(kk));
         }
         final String txt = sb.toString();
-        etIdent.setText(txt);
+        identCache = txt;
         getSharedPreferences(PREF, MODE_PRIVATE).edit().putString("ident", txt).apply();
         if (ledao != null) ledao.ident().put(k, v);
         refreshIdentBox();
+    }
+
+    /**
+     * 把 {@link #identCache} 落盘（键名沿用历史的 `ident`，免得老用户升级后身份丢了）。
+     * <p>★ 2026-10-17：以前这一步是散在各处直接写 SharedPreferences 的，
+     *   现在有了唯一的内存副本，落盘也收到这一处。
+     */
+    private void persistIdentCache() {
+        try {
+            getSharedPreferences(PREF, MODE_PRIVATE).edit()
+                    .putString("ident", identCache == null ? "" : identCache).apply();
+        } catch (Throwable ignore) { }
     }
 
     // ==================================================================
@@ -2661,17 +2717,17 @@ public class MainActivity extends Activity implements Ledao.Log {
             return;
         }
         if (realIdThread != null && realIdThread.isAlive()) {
-            log("（上一次取标识还在进行中，等它跑完）");
+            log("（上一次抓取还在进行中，等它跑完）");
             return;
         }
         log("");
-        log("========== 载入步道乐跑 · 现场取标识 ==========");
-        setStatus("⏳ 正在载入步道乐跑并取标识…");
+        log("========== 载入步道乐跑 · 现场抓取身份 ==========");
+        setStatus("⏳ 正在载入步道乐跑并抓取身份…");
         realIdThread = new Thread(() -> {
             final RealId.Result r = RealId.capture(this, true, this);
             ui.post(() -> {
                 if (r.trusted()) {
-                    String cur = etIdent.getText().toString();
+                    String cur = identCache == null ? "" : identCache;
                     String old = null;
                     for (String seg : cur.split("[&\\n]")) {
                         int i = seg.indexOf('=');
@@ -2681,10 +2737,13 @@ public class MainActivity extends Activity implements Ledao.Log {
                     }
                     setIdentField("mobileDeviceId", r.id);
                     if (old != null && old.length() == 36 && !old.equals(r.id)) {
-                        log("   ⚠ 身份里的设备号已由 " + old + " 换成现场取到的 " + r.id);
+                        /* ★ 2026-10-17：原来这里把**新旧设备号全打出来**
+                         *   （"已由 xxx 换成 yyy"）—— 设备号是用户标识，不打了，
+                         *   只说"换过"这一件事实。 */
+                        log("   ⚠ 身份里的设备号与现场取到的不一致，已按现场那份更新");
                     }
-                    setStatus("✅ 标识已就绪");
-                    // ★★ 取标识要「载入步道乐跑」，而它启动一次就会刷一次令牌
+                    setStatus("✅ 身份已就绪");
+                    // ★★ 抓取要「载入步道乐跑」，而它启动一次就会刷一次令牌
                     //    （refresh_token 一次性）—— 所以这里必须重新提取一次身份，
                     //    把 MMKV 里它刚写过的新令牌拿过来，否则一开跑就是 102。
                     //    RealId.capture 收尾时已经把乐跑结束掉了。
@@ -2703,18 +2762,21 @@ public class MainActivity extends Activity implements Ledao.Log {
                     //    内存没扫到时回落到 files 里的 .system_id.log，
                     //    把原本正确的设备号覆盖成了真机从来没用过的那个）。
                     if (r.ok()) {
-                        log("   ⚠ 只在 files/shared_prefs 里找到 " + r.id
-                                + " —— 那是 .system_id.log 一类「像设备号但不是」的值，**不采用**，身份保持原样");
+                        /* ★ 2026-10-17：原来这里把那个"像设备号但不是"的值**打在日志里**，
+                         *   设备号属用户标识，不打了（结论比值重要）。 */
+                        log("   ⚠ 只在 files/shared_prefs 里找到一个「像设备号但不是」的值"
+                                + " —— **不采用**，身份保持原样");
                     }
                     // 退路只给「没有 root」的情况：这时没别的办法，用 .system_id.log
                     // 兜底至少能试着跑一次（值多半不认，但比直接卡住强）。
                     // 有 root 时不给退路 —— 重试一次就能取到真值，不该拿假值去浪费一局。
                     if (thenRun && !Identity.hasRoot()) {
                         String dev = readDeviceId();
-                        if (devidFrom(etIdent.getText().toString()).length() != 36
+                        if (devidFrom(identCache).length() != 36
                                 && dev.length() == 36) {
                             setIdentField("mobileDeviceId", dev);
-                            log("   ⚠ 没有 root，退回 .system_id.log 兜底值 " + dev
+                            /* ★ 2026-10-17：兜底值本身也不再打进日志（是设备号）。 */
+                            log("   ⚠ 没有 root，退回 .system_id.log 兜底设备号"
                                     + "（真机请求里出现 0 次，多半不认）");
                             setStatus("⚠ 用的是兜底设备号");
                             pendingAutorun = true;
@@ -2736,7 +2798,8 @@ public class MainActivity extends Activity implements Ledao.Log {
     private void updateSniffBtn() {
         boolean on = LocalProxy.listening();
         btnSniff.setText(on ? "⏹  停止提取" : "📲  自动提取");
-        paintBtn(btnSniff, on ? "#B00020" : "#1565C0");   // 走 paintBtn：原色要留在 tag 上
+        paintBtn(btnSniff, on ? AppPrefs.hex(Q.DANGER) : AppPrefs.hex(Q.SKY));
+        // ↑ 走 paintBtn：原色要留在 tag 上（Q 版 = 停止红 / 天蓝胶囊）
     }
 
     private void autoExtract(final boolean thenRun) {
@@ -2752,8 +2815,8 @@ public class MainActivity extends Activity implements Ledao.Log {
         }
         if (extractThread != null && extractThread.isAlive()) return;
         pendingAutorun = thenRun;
-        // ★ 身份串只能在 UI 线程读（后台线程碰 TextView 是不允许的），先取出来
-        final String identRaw = etIdent.getText().toString().trim();
+        // ★ 身份串现在是普通字段（以前是 TextView，必须回 UI 线程读才安全）
+        final String identRaw = identCache == null ? "" : identCache.trim();
         log("");
         log("========== 自动提取身份 ==========");
         setStatus("⏳ 正在启动抓取…");
@@ -2838,9 +2901,12 @@ public class MainActivity extends Activity implements Ledao.Log {
                         + (id.studentNum.length() > 0 ? "&student_num=" + id.studentNum : "")
                         + (keepDev.length() == 36 ? "&mobileDeviceId=" + keepDev : "");
                 ui.post(() -> {
-                    etIdent.setText(txt);
+                    identCache = txt;
+                    persistIdentCache();
                     refreshIdentBox();
-                    log("   ✅ root 提取成功：uid=" + id.uid);
+                    /* ★ 2026-10-17：原来这里打 `uid=<真值>` —— 用户第 3 条禁止
+                     *   日志输出用户标识，改成只说结果。 */
+                    log("   ✅ root 提取成功（uid 等身份内容按用户要求不打进日志）");
                     setStatus("✅ 身份已就绪");
                     if (pendingAutorun) { pendingAutorun = false; startRun(); }
                 });
@@ -2997,8 +3063,10 @@ public class MainActivity extends Activity implements Ledao.Log {
                     startActivity(back);
                 } catch (Throwable ignore) { }
                 ui.postDelayed(() -> {
+                    /* ★ 2026-10-17：原来这里把令牌短形式打出来（"身份已抓回：<tok>"）——
+                     *   用户第 3 条禁止日志输出用户标识，改成只说结果。 */
                     if (sniffKv.containsKey("uid") && sniffKv.containsKey("token"))
-                        log("✅ 身份已抓回：" + shortTok(sniffKv.get("token")));
+                        log("✅ 身份已抓回（内容按用户要求不打进日志）");
                     else
                         log("⚠ 还没抓到 —— 请手动切到步道乐跑点两个页签再回来");
                 }, 2500);
@@ -3148,7 +3216,7 @@ public class MainActivity extends Activity implements Ledao.Log {
             if (sniffKv.containsKey("token")) sniffKv.put("access_token", sniffKv.get("token"));
             txt = toQuery(sniffKv);
         }
-        ui.post(() -> { etIdent.setText(txt); refreshIdentBox(); });
+        ui.post(() -> { identCache = txt; persistIdentCache(); refreshIdentBox(); });
 
         boolean full;
         synchronized (sniffKv) {
@@ -3211,7 +3279,8 @@ public class MainActivity extends Activity implements Ledao.Log {
             final String what = got.toString().trim();
             synchronized (sniffKv) { txt = toQuery(sniffKv); }
             ui.post(() -> {
-                etIdent.setText(txt);
+                identCache = txt;
+                persistIdentCache();
                 refreshIdentBox();
                 log("  ★ 响应里拿到新令牌（" + path + "）：" + what);
                 setStatus("✅ 已拿到最新令牌（" + what + "）");
@@ -3235,13 +3304,14 @@ public class MainActivity extends Activity implements Ledao.Log {
         ui.post(() -> {
             log("");
             log("★★★ 身份已就绪（" + why + "）");
-            String uid, tok; boolean hasRt;
+            /* ★ 2026-10-17 用户第 3 条：原来这一行把 uid 原样 + 令牌短形式打出来
+             *   （"uid=19790779  令牌=2Czl…  续期=有"）。uid 与令牌都是用户标识，
+             *   现在只报"有没有续期令牌"这一件对用户有用的事实。 */
+            boolean hasRt;
             synchronized (sniffKv) {
-                uid = or(sniffKv.get("uid"), "?");
-                tok = shortTok(sniffKv.get("token"));
                 hasRt = sniffKv.containsKey("refresh_token");
             }
-            log("    uid=" + uid + "  令牌=" + tok + "  续期=" + (hasRt ? "有" : "无"));
+            log("    身份内容按用户要求不打进日志；续期令牌=" + (hasRt ? "有 ✅" : "无 ⚠"));
             setStatus(go ? "✅ 身份已就绪，马上开跑" : "✅ 身份已就绪");
         });
         if (recordMode) return;
@@ -3527,17 +3597,32 @@ public class MainActivity extends Activity implements Ledao.Log {
      *       token / access_token / refresh_token / umid / PHPSESSID / Cookie
      *   其余一律**逐字节原样**保留：sign、nonce、timestamp、lpi1、record_str、
      *   log_data、坐标、里程、配速、服务端响应…… 一个字符都不动。
+     *
+     * <p>★ 2026-10-17：改成 {@code public} 的唯一理由是**让离线测试能直接验它**
+     *   （{@code work/looptest/PrivacyTest} 拿真机日志原文逐条断言"这几个值必须被打掉"）。
+     *   它是个纯字符串函数 —— 不读界面、不碰状态、不联网，暴露出来没有副作用。
      */
-    static String maskSensitive(String s) {
+    public static String maskSensitive(String s) {
         if (s == null) return "";
         // ① uid / 学号 —— 数字型标识
         s = s.replaceAll("(?i)\\buid=([0-9]{4,})", "uid=【已隐藏】");
         s = s.replaceAll("(?i)\\bstudent_num=([0-9]{4,})", "student_num=【已隐藏】");
+        /* ①b ★ 2026-10-17：`uid=19790779` 这种写法抓到了，但日志里还有
+         *   `uid=19790779  令牌=xxx  续期=有` 这种**中文前缀**写法（onIdentityReady），
+         *   以及「✅ 身份已抓回」「root 提取成功」那两行裸的 uid。 */
+        s = s.replaceAll("(?i)(uid\\s*[=:：]\\s*)([0-9A-Za-z_\\-]{4,})", "$1【已隐藏】");
+        s = s.replaceAll("(?i)(令牌\\s*[=:：]\\s*)([0-9A-Za-z+/=]{8,})", "$1【已隐藏】");
         // ② 设备号（GUID）
         s = s.replaceAll("(?i)\\b(mobileDeviceId|newMobileDeviceId)=([0-9a-f\\-]{8,})",
                 "$1=【已隐藏】");
+        s = s.replaceAll("(?i)(设备\\s*[=:：]\\s*)([0-9a-f\\-]{8,})", "$1【已隐藏】");
         // ③ 登录令牌 / 续期令牌 —— 保留前 4 位便于对账，其余打掉
         s = s.replaceAll("(?i)\\b(access_token|refresh_token|token)=([0-9A-Za-z]{8,})",
+                "$1=【已隐藏】");
+        /* ③b ★ 2026-10-17：续期成功那行是「新 token=…」（**中间有空格**），
+         *   上面那条 `\b(access_token|…|token)=` 要求 `token` 紧贴 `=`，抓不到。
+         *   这里补一条允许空格的，避免"续期一成功就把新令牌打进日志"。 */
+        s = s.replaceAll("(?i)\\b(access_token|refresh_token|token)\\s*=\\s*([0-9A-Za-z]{8,})",
                 "$1=【已隐藏】");
         // ④ 风控 umid（lpi0 明文前 34 字符）
         s = s.replaceAll("(?i)\\bumid\\s*=\\s*([0-9a-zA-Z]{16,})", "umid=【已隐藏】");
@@ -3545,6 +3630,17 @@ public class MainActivity extends Activity implements Ledao.Log {
          *   不是 `umid=` 这种键值写法，第 ④ 条抓不到。设备指纹跟 uid / 学号同级，
          *   所以再按形状扫一遍（正则只有一份，在 Ledao 里）。 */
         s = Ledao.maskUmidShape(s);
+        /* ④c ★★★ 2026-10-17 真机抓出来的漏网：上面两条都只认**完整** umid，
+         *   而设备上**旧版**留下的 files/run.log 里存的是旧措辞
+         *   `umid=ab8286…（umid 已截断）` —— 只有前 6 位，形状规则匹配不到，
+         *   于是这几行被 restoreRunLog 原样搬上了屏幕与 logcat（用户第 3 条正是要堵这个）。
+         *   下面这条把带 `umid=` / `明文=` 前缀的**截断写法**一起收掉。
+         *   （新版已经不打这两行了，这条是给**历史日志**兜底的。） */
+        /* 旧版的确切格式：`明文=<前6位hex>…（umid 已截断）<md5hex>`（`umid=` 同理）。
+         * 精确匹配这个形状 —— 用"往后吃 40 个字符"那种宽窗口会切在半个 hex 上，
+         * 留下 `…bac` 之类的残渣（第一次就是这么干的）。 */
+        s = s.replaceAll("(?i)(umid|明文)\\s*=\\s*[0-9a-fA-F]{4,}…?\\s*(?:[（(][^）)]*[）)])?[0-9a-fA-F]*",
+                "$1=【已隐藏】");
         // ⑤ 抓包 cookie 里的会话号
         s = s.replaceAll("(?i)(PHPSESSID=)[0-9a-zA-Z]{6,}", "$1【已隐藏】");
         s = s.replaceAll("(?i)(acw_tc=)[^;\\s]+", "$1【已隐藏】");
@@ -3591,7 +3687,7 @@ public class MainActivity extends Activity implements Ledao.Log {
         TextView t = new TextView(this);
         t.setText(s);
         t.setTextSize(11.5f);
-        t.setTextColor(Color.parseColor("#37474F"));
+        t.setTextColor(Q.INK);                 // ★ Q 版：墨色字
         t.setPadding(dp(4), dp(4), dp(3), dp(4));
         return t;
     }
@@ -3603,20 +3699,77 @@ public class MainActivity extends Activity implements Ledao.Log {
         e.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
         e.setWidth(dp(widthDp));
         e.setGravity(Gravity.CENTER);
-        e.setBackground(round("#F1F6F3", "#C9DCD1", 6));
+        e.setBackground(Q.roundRect(this, Q.PANEL2, Q.STROKE, 14));   // ★ Q 版：奶油小圆角
         e.setPadding(dp(4), dp(4), dp(4), dp(4));
         return e;
     }
 
+    /** 这个颜色是不是已经是 Q 的糖果色（是就不再映射，免得 CORAL 被二次分类成 DANGER） */
+    private static boolean isCandy(int c) {
+        return c == Q.CORAL || c == Q.MINT || c == Q.SKY || c == Q.LEMON
+                || c == Q.PINK || c == Q.GRAPE || c == Q.DANGER || c == Q.GRAY;
+    }
+
+    /**
+     * ★ Q 版皮肤：把老代码里的按钮底色（深绿 / 深蓝 / 各种灰）换成**糖果色**。
+     *
+     * <p>判据全是纯算术 —— 不碰 {@code Color.colorToHSV}（那些方法离线跑的时候是
+     * stub，AppPrefs 那段注释里记着这笔老账）：先看饱和度，太灰就归 {@link Q#GRAY}；
+     * 否则按色相落到 CORAL / LEMON / MINT / SKY / GRAPE / PINK / DANGER。
+     *
+     * <p>这样一来 {@link #mkBtn} 那几十个老调用点一个都不用改颜色，
+     * 整个软件（首页 / 地图那排 / 侧边栏）的按钮就一起变成 Q 版胶囊了。
+     */
+    private static int candyOf(int c) {
+        int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
+        int mx = Math.max(r, Math.max(g, b)), mn = Math.min(r, Math.min(g, b));
+        int d = mx - mn;
+        if (d < 36) return Q.GRAY;                        // 灰调： #616161 / #37474F / #455A64
+        float h;
+        if (mx == r) h = 60f * ((g - b) / (float) d);
+        else if (mx == g) h = 60f * ((b - r) / (float) d + 2f);
+        else h = 60f * ((r - g) / (float) d + 4f);
+        if (h < 0) h += 360f;
+        if (h < 12f) return Q.DANGER;                     // 正红（#B00020 / #C62828）
+        if (h < 42f) return Q.CORAL;                      // 橙 / 蜜桃（#B26A00 / #E06C1B）
+        if (h < 70f) return Q.LEMON;                      // 黄
+        if (h < 165f) return Q.MINT;                      // 绿（#1B7A4B / #2E9E6B）
+        if (h < 255f) return Q.SKY;                       // 青 / 蓝（#1565C0 / #1976D2）
+        if (h < 305f) return Q.GRAPE;                     // 紫（#4A148C / #6A1B9A）
+        if (h < 345f) return Q.PINK;                      // 品红 / 樱花（#D81B60）
+        return Q.DANGER;                                  // 又绕回红
+    }
+
+    /**
+     * ★ Q 版：整行宽的胶囊按钮（弹窗里那种"一步一个按钮"的排版用它）。
+     *
+     * <p>和 {@link #mkBtn} 的区别：这个直接走 {@link Q#btn}，用的是**绝对**糖果色
+     * （不参与主题重刷、也不做背景照片的半透明）—— 弹窗本来就是不透明的。
+     */
+    private Button qBtnWide(String text, int kind, float size) {
+        Button b = Q.btn(this, text, kind, size);
+        b.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        return b;
+    }
+
     private Button mkBtn(String s, String color, float size) {
+        /* ★★★ 2026-10-17 Q 版：按钮一律是**糖果色胶囊** —— 只改样子，
+         *   点击回调一个都没碰。写法照 app3 的 Q.btn / UiKit.btn：
+         *   字色按底色亮度自动选（浅色胶囊用墨字、深色胶囊用白字），
+         *   这样柠檬黄那种"白字看不清"的坑不会出现。 */
         Button b = new Button(this);
         b.setText(s);
         b.setTextSize(size);
-        b.setTextColor(Color.WHITE);
         b.setAllCaps(false);
-        b.setPadding(dp(2), dp(6), dp(2), dp(6));
+        b.setGravity(Gravity.CENTER);
+        b.setPadding(dp(6), dp(7), dp(6), dp(8));
         b.setMinWidth(0);
         b.setMinimumWidth(0);
+        b.setMinHeight(dp(38));
+        b.setMinimumHeight(dp(38));
+        try { b.setStateListAnimator(null); } catch (Throwable ignore) { }
         paintBtn(b, color);        // ★ 记下原色 + 按当前透明度上色
         tinted.add(b);
         return b;
@@ -3625,26 +3778,29 @@ public class MainActivity extends Activity implements Ledao.Log {
     /**
      * 给按钮上色，并把**原色**记在 tag 上 —— {@link #applyTheme} 靠它重刷，
      * 所以任何时候改按钮颜色都要走这里，别直接 setBackgroundColor。
+     *
+     * <p>★ Q 版：老色号先映射成糖果色，再画成**胶囊**（{@link Q#pillBg}）；
+     * 铺了背景照片时仍然只让**底**半透明（字不动，{@code btnAlpha} 那套原样保留）。
      */
     private void paintBtn(Button b, String color) {
         if (b == null || color == null) return;
         b.setTag(color);
-        b.setBackgroundColor(AppPrefs.alpha(Color.parseColor(color), btnAlpha));
+        try {
+            int c = Color.parseColor(color);
+            int fill = isCandy(c) ? c : candyOf(c);
+            b.setBackground(Q.pillBg(this, AppPrefs.alpha(fill, btnAlpha)));
+            b.setTextColor(Q.on(fill));
+        } catch (Throwable ignore) { }
     }
 
     /** ★ 第 5 条：按当前的 btnAlpha 把所有按钮重刷一遍（换主题 / 换背景照片时调） */
     private void repaintButtons() {
         for (Button b : tinted) {
             Object t = b.getTag();
-            if (t instanceof String) {
-                try {
-                    b.setBackgroundColor(
-                            AppPrefs.alpha(Color.parseColor((String) t), btnAlpha));
-                } catch (Throwable ignore) { }
-            }
+            if (t instanceof String) paintBtn(b, (String) t);
         }
         // 开始/停止按钮的颜色跟着「在不在跑」变，单独补一次
-        paintBtn(btnRun, RUN_ACTIVE ? "#B00020" : "#1B7A4B");
+        paintBtn(btnRun, RUN_ACTIVE ? AppPrefs.hex(Q.DANGER) : AppPrefs.hex(Q.MINT));
     }
 
     private GradientDrawable round(String fill, String stroke, int radiusDp) {
@@ -3670,10 +3826,15 @@ public class MainActivity extends Activity implements Ledao.Log {
         return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
     }
 
-    private static String shortTok(String t) {
-        if (t == null) return "(无)";
-        return t.length() <= 6 ? t : t.substring(0, 6) + "…";
-    }
+    /* ★ 2026-10-17 用户第 3 条：「日志中也不能输出用户标识相关内容」。
+     *
+     *   这里原来有 `private static String shortTok(String t)`（令牌留前 6 位），
+     *   供日志与身份小框打印"令牌=8f3c1d…"用。现在：
+     *     · 身份小框不再显示令牌；
+     *     · 所有会打印令牌/uid 的日志行都改成了只说结果（"令牌可用 ✅"）；
+     *     · 剩下的通用兜底在 logLine() 的源头脱敏（maskSensitive）。
+     *   于是 shortTok 一个引用都没有了，删掉它 —— 免得以后有人又拿它去"打个短的"。
+     */
 
     // ==================================================================
     //  ★ 界面优化 #7（2026-10-07）：日志排错增强
@@ -3733,11 +3894,19 @@ public class MainActivity extends Activity implements Ledao.Log {
      *   <li>界面上的日志框 —— 界面还在才贴；被销毁了就跳过（跑步不受影响）。</li>
      * </ol>
      *
+     * <p>★★★ 2026-10-17 用户第 3 条：「日志中也不能输出用户标识相关内容」。
+     *   <b>脱敏必须落在这里</b>：这是三个去处**共同的唯一入口**。
+     *   以前只在 {@link #copyLog}（"复制日志"那一颗键）里做 maskSensitive ——
+     *   也就是说屏幕上的日志框、落盘的 {@code run.log}、以及 logcat
+     *   拿到的都是**原文**：用户截个图、或者把手机给别人看，uid/令牌就出去了。
+     *   现在在源头就脱敏，三个去处一次干净（copyLog 那道仍保留，当第二层保险）。
+     *
      * @param persist 从磁盘捞回来的旧日志不要再写回磁盘（{@code false}），否则会越滚越多
      */
     private void logLine(String s, boolean persist) {
-        String line = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()) + "  " + s;
-        android.util.Log.i("LedaoTester", s);
+        final String clean = maskSensitive(s);          // ★ 三个去处的共同源头，先脱敏
+        String line = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()) + "  " + clean;
+        android.util.Log.i("LedaoTester", clean);
         if (persist && RUN_ACTIVE) RunLog.append(line);
         // ★ 打到「当前活着的 Activity」上。Activity 可能被重建，
         //   旧跑步线程如果往已销毁的实例上打日志，用户就"看不见"了。
@@ -4115,35 +4284,14 @@ public class MainActivity extends Activity implements Ledao.Log {
             log("[自检] ①" + MiniWindow.statusLine(this));
             return;
         }
-        if ("pay".equals(kind)) {
-            /* ★★★ v1.0.28：侧边栏那块收款码的体检 —— 不联网、不弹窗、不碰用户数据，
-             *   只从 assets 里解一次图。加它的原因很实在：这块只在**侧边栏**里出现，
-             *   而侧边栏要靠手点一下 ☰ 才打得开；手机上不让发点击事件（那台机在用），
-             *   于是"图到底能不能解出来"就没人能替用户确认。这里绕过界面直接验。 */
-            log("[自检] 收款码（侧边栏「💬 开发者留言」最下面那一块）");
-            try {
-                log("[自检] ①那句话：" + DevNote.TIP_TEXT);
-                android.graphics.Bitmap bm;
-                try (java.io.InputStream in = getAssets().open(DevNote.TIP_QR)) {
-                    bm = android.graphics.BitmapFactory.decodeStream(in);
-                }
-                log("[自检] ②图片 assets/" + DevNote.TIP_QR + "："
-                        + (bm == null ? "解不出来 ❌（装机包里那张图坏了）"
-                                : "解码成功 ✅ " + bm.getWidth() + "×" + bm.getHeight()));
-                android.view.View blk = DevNote.tipBlock(this);
-                int kids = (blk instanceof android.view.ViewGroup)
-                        ? ((android.view.ViewGroup) blk).getChildCount() : -1;
-                log("[自检] ③那一块建起来了：" + kids + " 个子视图（文案 + 图 + 一行小字）"
-                        + "，点左上角 ☰ 拉到最下面就能看到");
-            } catch (Throwable t) {
-                log("[自检] 收款码这块出错：" + Err.one(t));
-            }
-            return;
-        }
+        /* ★ 2026-10-17 用户要求「删掉打赏相关内容」：`pay` 这个自检分支整块删除。
+         *   它原来验的是侧边栏那块收款码（TIP_TEXT 那句话 + TIP_QR 那张图能不能解出来），
+         *   而收款码本身已经删掉了，留着这个分支就会去引用不存在的常量。
+         *   自检入口（am start … --es selftest pay）现在会落到最后的"不认识"分支。 */
         if ("devnote".equals(kind)) {
             // 留言弹窗平时勾了「不再弹出」就看不到了，自检里强制看一次
             DevNote.show(this, null);
-            log("[自检] 开发者留言弹窗（看那四个复制小按键）");
+            log("[自检] 开发者留言弹窗（看那颗可复制的 QQ 键）");
             return;
         }
         if ("face".equals(kind)) {
@@ -4297,7 +4445,7 @@ public class MainActivity extends Activity implements Ledao.Log {
      *   ② 补上 v1.0.25 之后的行为：切走 / 息屏 / 划掉最近任务都不会停跑，
      *      要停必须回来点「■ 停止跑步」。不写清楚，用户划掉以后会以为停不掉。
      *   ③ 写清"什么时候会跳到步道乐跑"（★ v1.0.33：只有「📲 自动提取」和
-     *      「📥 载入步道乐跑并取标识」这两个按钮会跳，助手不会自己跳）。
+     *      「📥 载入步道乐跑并抓取身份」这两个按钮会跳，助手不会自己跳）。
      *   ★ 文案只此一份；仓库里的《使用说明.md》与它同源，改一处要一起改。 */
     private static final String HELP_TEXT =
             "【三步走】\n"
@@ -4374,7 +4522,7 @@ public class MainActivity extends Activity implements Ledao.Log {
           + "· 每天只计 1 次\n\n"
           + "【注意】\n"
           + "· 助手不会自己跳到步道乐跑。要取身份只有两条路：点「📲 自动\n"
-          + "  提取」，或者点「📥 载入步道乐跑并取标识」——两个按钮都会\n"
+          + "  提取」，或者点「📥 载入步道乐跑并抓取身份」——两个按钮都会\n"
           + "  明说要去步道乐跑；其余时候它老老实实待在原地。\n"
           + "· 步道乐跑是单会话登录。本程序会在开跑前自动结束它的进程、\n"
           + "  抢过会话；令牌要是已经被它刷掉了，助手会停下来告诉你\n"
