@@ -41,54 +41,43 @@ public final class DevNote {
 
     // ------------------------------------------------------------------ 联系方式
     /**
-     * ★★★ 2026-10-10 用户第 3 条：把「开发者留言」里出现的**网址 / QQ 号 / 邮箱**
-     * 全部做成可复制的小按键。
+     * ★★★ 2026-10-17（用户第 4 次改留言，正式版口径）：
+     *   留言正文换成「此版本为正式版…」，**联系方式只留 QQ** ——
+     *   原先那四个可复制小按键（github / gitee / QQ 号 / 邮箱）里的仓库地址与邮箱
+     *   不再出现在留言里，所以 {@code GITHUB} / {@code GITEE} / {@code EMAIL}
+     *   三个常量一并删掉，只保留 {@link #QQ}。
      *
-     * 为什么要按键而不是让用户长按选中：普通用户根本不会在弹窗正文里长按拖选，
-     * 要么抄错一位、要么干脆放弃。而这几串东西是**唯一的官方渠道**，
-     * 抄错就意味着装到了来路不明的包 —— 那正是留言第一段在警告的事。
+     * <p>为什么只留一个常量而不是删光：{@link Err#advise} 要用它告诉用户
+     *   "把日志发给谁"，字面量只能有一份，不许在别处再写一遍。
      *
-     * ★ 这四个常量同时被 {@link Err#advise} 用来告诉用户"把日志发到哪"，
-     *   所以只能有一份，不许在别处再写一遍字面量。
+     * <p>可复制小按键（{@link #copyRow}）保留 —— 普通用户不会在弹窗正文里长按拖选，
+     *   要么抄错一位、要么干脆放弃；QQ 号是**唯一的官方渠道**，抄错就意味着
+     *   装到了来路不明的包。现在只剩这一个键。
      */
-    public static final String GITHUB = "https://github.com/BAB2007/yuda-run-helper";
-    public static final String GITEE = "https://gitee.com/BAB2007/yuda-run-helper";
     public static final String QQ = "3855962053";
-    public static final String EMAIL = "3855962053@qq.com";
 
     /**
-     * ★ 2026-10-10 用户要求（两处）：
-     *   ① 删掉第一段里那句质问代跑定价的括号 —— 删完是「…代跑要的太多了，一次1块，
-     *      一学期65，都够吃一次自助烧烤了…」，语气从"质问别人怎么定价"变成单纯算自己的账。
-     *      （这里故意不把那句原文抄一遍 —— 抄了就会有人 grep 到，以为没删干净。
-     *        要防回退看 AlertTest B5o，它查的是 MESSAGE 字段本身。）
-     *   ② 倒数第三段末尾加一个「大家」——
-     *      「…但是如果有其他的锻炼形式**，大家**还是要锻炼一下的。」
-     *      原文读起来像"煮波自己会去锻炼"，加「大家」才是对读者说的，也才配得上
-     *      开头那句"锻炼是必要的"。防回退看 AlertTest B5r。
-     *   ③ 2026-10-11 用户要求：第一段那句警告里的「手机变砖，系统被入侵，」
-     *      去掉 —— 只留「信息被盗，财产损失」。原来那半句把话说得太重
-     *      （这个软件本身不写系统分区、不要 root），README 里同一句也跟着改了。
+     * ★★★ 2026-10-17 用户第 4 次改留言（正式版口径）—— 全文换成三句：
+     * <pre>
+     *   此版本为正式版，以前发布过一个开源版本，但是存在一些安全问题，
+     *   避免可能的刷跑异常、账号限制等麻烦，请使用正式版。
+     *   作者联系方式请联系QQ3855962053。
+     * </pre>
+     *   与旧版（匿名开源、吐槽代跑定价、github/gitee 获取渠道、删库跑路…）相比：
+     *   · 不再提开源仓库地址（那两行已从界面与留言里去掉）；
+     *   · 不再有打赏那段（见文件末尾原来的 tipBlock，已整块删除）；
+     *   · 联系方式只有 QQ 一个（{@link #QQ}）。
+     *
+     * <p>历史沿革（为什么之前是那样，别再改回去）：
+     *   ① 2026-10-10：第一段那句质问代跑定价的括号删掉；
+     *   ② 2026-10-10：倒数第三段末尾加一个「大家」；
+     *   ③ 2026-10-11：那句警告里的「手机变砖，系统被入侵，」去掉，只留「信息被盗，财产损失」；
+     *   ④ 2026-10-17：整篇换成上面这三句。
      */
     public static final String MESSAGE =
-            "请在github(" + GITHUB + "),gitee(" + GITEE + ")"
-          + "或通过本人QQ小号(" + QQ + ")进行获取，"
-          + "其余途径而导致的信息被盗，财产损失等问题，"
-          + "本人一概一律不负责;如果您已经通过其他途径下载了本软件还未使用，"
-          + "为避免不必要的麻烦，建议请立即删除。\n\n"
-          + "煮波匿名开源，请不要试图找到煮波，如果你知道了煮波的一些信息，也不必在意，"
-          + "无视就好，因为煮波也只是一个普通的学生，没有什么特殊的。\n\n"
-          + "煮波也是河北工程大学的学生，所以大可不必担心我做出损害校友利益的事。\n\n"
-          + "煮波做这个软件的初衷只是因为代跑要的太多了，一次1块，一学期65，"
-          + "都够吃一次自助烧烤了，所以煮波把钱省下和室友吃了一次自助烧烤[doge]。"
-          + "还有就是邯郸的冬天确实很冷，哪怕在路上骑着电动车掏个脸都很遭罪，"
-          + "所以煮波也是希望能方便一下大家。\n\n"
-          + "但煮波知道锻炼的必要的，所以虽然冬天跑校园跑很cs，"
-          + "但是如果有其他的锻炼形式，大家还是要锻炼一下的。\n\n"
-          + "本人拥此软件是否存活以及是否更新的决策权，"
-          + "如果煮波受到不可抗拒因素的影响，会果断删库跑路。\n\n"
-          + "如遇到软件报错多次重试后仍无法使用，请点击复制日志，"
-          + "并将日志信息发送至" + EMAIL;
+            "此版本为正式版，以前发布过一个开源版本，但是存在一些安全问题，"
+          + "避免可能的刷跑异常、账号限制等麻烦，请使用正式版。\n\n"
+          + "作者联系方式请联系QQ" + QQ + "。";
 
     // ---- 偏好键
     private static final String K_SEEN   = "devnote_seen";     // 已经完整看过一次
@@ -265,8 +254,12 @@ public final class DevNote {
     // ==================================================================
 
     /**
-     * 四个「复制」小按键，两行两列。留言弹窗和侧边栏「💬 开发者留言」共用同一份，
+     * 可复制小按键。留言弹窗和侧边栏「💬 开发者留言」共用同一份，
      * 保证两处看到的东西、点到的东西完全一样。
+     *
+     * <p>★ 2026-10-17：从四个键（github / gitee / QQ 号 / 邮箱）减到**一个**
+     *   —— 留言正文里现在只剩 QQ 这一个联系方式（见 {@link #MESSAGE}），
+     *   留着一个已经不在正文里出现的仓库地址按键，比删掉更让人困惑。
      */
     public static LinearLayout copyRow(final Activity act) {
         float d = act.getResources().getDisplayMetrics().density;
@@ -274,11 +267,7 @@ public final class DevNote {
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(0, (int) (2 * d), 0, 0);
         box.addView(chipRow(act, new String[][]{
-                {"\uD83D\uDCCB github", GITHUB},
-                {"\uD83D\uDCCB gitee", GITEE}}));
-        box.addView(chipRow(act, new String[][]{
-                {"\uD83D\uDCCB QQ 号", QQ},
-                {"\uD83D\uDCCB 邮箱", EMAIL}}));
+                {"\uD83D\uDCCB QQ 号", QQ}}));
         return box;
     }
 
@@ -334,76 +323,4 @@ public final class DevNote {
     }
 
     private static volatile boolean showing = false;
-
-    // ==================================================================
-    //  ★ 2026-10-10 用户第 6 条：侧边栏最后的收款码
-    // ==================================================================
-
-    /** 收款码旁边那句话 —— 用户原话照抄，一个字都不改（也不加 markdown 星号） */
-    public static final String TIP_TEXT =
-            "软件制作不易，不强制收费，允许白嫖，但也不拒绝打赏，回回血[doge]";
-
-    /**
-     * 收款码图片：`assets/pay_qr.png`。
-     *
-     * 这张图是从用户发来的支付宝收款海报里**只裁剪、不缩放**抠出来的
-     * （`work/cut_payqr.py`，卡片 654×736）—— 二维码的模块还是原像素，
-     * 一个模块 13 px，屏幕上放大一点也不影响扫。
-     */
-    public static final String TIP_QR = "pay_qr.png";
-
-    /**
-     * 「打赏」那一块：一句话 + 收款码。挂在侧边栏「💬 开发者留言」的**最后**。
-     *
-     * <p>为什么只放侧边栏、不放启动弹窗：弹窗那边首次要停够 30 秒才能关，
-     * 小屏手机上再加一张 230dp 的图，会把「关闭」和四个复制键挤出屏幕
-     * （弹窗正文的高度是算过的，见 {@link #show}）。
-     *
-     * <p>图片读不出来（assets 缺了 / 解码失败）就只留那句话 —— 侧边栏不能因此
-     * 空一块，更不能崩。
-     */
-    public static View tipBlock(final Activity act) {
-        float d = act.getResources().getDisplayMetrics().density;
-        int fg = AppPrefs.fg(act);
-        LinearLayout box = new LinearLayout(act);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(0, (int) (12 * d), 0, 0);
-
-        TextView t = new TextView(act);
-        t.setText(TIP_TEXT);
-        t.setTextSize(12.5f);
-        t.setTextColor(fg);
-        t.setLineSpacing(3 * d, 1.15f);
-        box.addView(t);
-
-        try {
-            java.io.InputStream in = act.getAssets().open(TIP_QR);
-            android.graphics.Bitmap bm = android.graphics.BitmapFactory.decodeStream(in);
-            in.close();
-            if (bm == null) return box;
-            android.widget.ImageView iv = new android.widget.ImageView(act);
-            iv.setImageBitmap(bm);
-            iv.setAdjustViewBounds(true);
-            iv.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
-            /* 侧边栏面板的内容宽 = 280dp − 左右各 13dp = 254dp；给 230dp 留点富余。
-             * 用 dp 不用"铺满"：低密度屏上铺满会把这图放大到糊。 */
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    (int) (230 * d), ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.gravity = Gravity.CENTER_HORIZONTAL;
-            lp.setMargins(0, (int) (8 * d), 0, 0);
-            box.addView(iv, lp);
-
-            TextView hint = new TextView(act);
-            hint.setText("支付宝扫这个码就行（另一个手机扫、或者截图下来扫都可以）；"
-                    + "不扫也完全没关系，功能一个不少。");
-            hint.setTextSize(11.5f);
-            hint.setTextColor(AppPrefs.alpha(fg, 0.75f));
-            hint.setGravity(Gravity.CENTER_HORIZONTAL);
-            hint.setPadding(0, (int) (6 * d), 0, 0);
-            box.addView(hint);
-        } catch (Throwable ignore) {
-            // 图没了就只剩那句话 —— 不吵用户，也不留空白框
-        }
-        return box;
-    }
 }

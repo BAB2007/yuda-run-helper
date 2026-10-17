@@ -249,6 +249,15 @@ public class Ledao {
     /** 预览那条路线用的两个打卡点序号 n（1..14） */
     public int[] routeCpN = null;
 
+    /**
+     * 最近一次 {@link #perStep} 算出来的**总步数**（= 那一段 list 的和）。
+     * <p>★ 它存在的唯一理由是**让 step_num 与 step_info 同源**：收尾报文里
+     *   `step_num` 是从 list 逐项求和得来的，这里是同一个数的旁证；
+     *   `StopParamTest` 会拿它断言两条路算出来的是同一个值。
+     *   2026-10-17 改步长模型时新增 —— 改之前是固定 1.55 m/步，且没有这个旁证。
+     */
+    private volatile int lastStepTotal = 0;
+
     // ------------------------------------------------------------------
     //  ★★★ beforeRunV260 下发的 103 个规则参数里，以前我们只用了 8 个。
     //     下面这些是「服务端会拿来核轨迹」的那几个（docs/21 §四）。
@@ -485,37 +494,32 @@ public class Ledao {
         if (lpi0Count == 1 && log != null) {
             try {
                 String back = verifyLpi0(out, key, LPI0_IVS[i]);
-                /* ★★★ v1.0.33（docs/66）：umid 是**设备指纹**，不往界面上打全 ——
-                 *   日志框会被截图、会被复制发出来，前 6 位够对账了。
-                 *   （copyLog 那边也加了同样形状的兜底打码。） */
-                log.log("      [lpi0] umid=" + shortUmid(umid));
-                log.log("      [lpi0] key[" + i + "]=" + key + " iv=" + LPI0_IVS[i]
-                        + " 明文=" + shortUmid(plain));
+                /* ★★★ 2026-10-17 用户第 3 条：「日志中也不能输出用户标识相关内容」。
+                 *   原来这里打 `[lpi0] umid=ab8286…`（shortUmid 留前 6 位）与
+                 *   `明文=ab8286…` —— 前 6 位也算"用户标识相关内容"，一并去掉。
+                 *   自检本身照常做（verifyLpi0 比对了明文与密文），只是不再打值：
+                 *   失败时打出重新加密后的结果供排查，通过时只说通过。 */
                 log.log("      [lpi0] 自检 " + (plain.equals(back) ? "通过 ✅" : "失败 ❌ " + back)
-                        + "   " + ct.length + " 字节密文");
+                        + "   " + ct.length + " 字节密文（umid 与明文按用户要求不打）");
             } catch (Throwable ignore) { }
         }
         return out;
     }
 
     /**
-     * ★ v1.0.33：把 umid（设备指纹，34 字符 = 32 hex + od）截成前 6 位。
+     * 把文本里任何 umid（设备指纹，34 字符 = 32 hex + od）换成「已隐藏」。
      *
-     * <p>为什么连日志里都要截：这段话会被用户**截图**发出来、也会被「复制日志」带走。
-     * 设备指纹跟 uid / 学号一样属于个人标识，能不打全就不打全 ——
-     * 前 6 位足够对账（"到底读的是本机的 umid 还是兜底值"一眼可辨）。
+     * <p>★★★ 2026-10-17 用户第 3 条：「日志中也不能输出用户标识相关内容」。
+     *   以前这里留**前 6 位**（`ab8286…（umid 已截断）`）供对账 ——
+     *   前 6 位同样属于"用户标识相关内容"，而且既然调用点已经不再打 umid 了，
+     *   这个函数就退回成纯粹的兜底：一个字符都不留。
+     *
+     * <p>调用方只剩「复制日志」那条兜底路（{@link #maskUmidShape} 用的是同一个形状正则）。
      */
     public static String shortUmid(String s) {
         if (s == null) return "(无)";
-        java.util.regex.Matcher m = UMID_SHAPE.matcher(s);
-        StringBuffer sb = new StringBuffer();
-        while (m.find()) {
-            String v = m.group(0);
-            m.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(
-                    v.substring(0, 6) + "…（umid 已截断）"));
-        }
-        m.appendTail(sb);
-        return sb.toString();
+        if (s.length() == 0) return "";
+        return UMID_SHAPE.matcher(s).replaceAll("（umid 已隐藏）");
     }
 
     /** umid 的形状：32 位小写 hex + `od`（全工程只此一处定义这个正则） */
@@ -575,11 +579,11 @@ public class Ledao {
         if (lpi1Count == 1 && log != null) {
             try {
                 String back = verifyLpi0(out, key, LPI0_IVS[i]);
-                log.log("      [lpi1] umid=" + shortUmid(umid));
-                log.log("      [lpi1] key[" + i + "]=" + key + " iv=" + LPI0_IVS[i]
-                        + " 明文=" + shortUmid(plain));
+                /* ★★★ 2026-10-17：同 makeLpi0 —— umid 与明文都不再打进日志（用户第 3 条）。
+                 *   自检照做，只是不再打值。 */
                 log.log("      [lpi1] 自检 " + (plain.equals(back) ? "通过 ✅" : "失败 ❌ " + back)
-                        + "   " + ct.length + " 字节密文 → " + out.length() + " 字符");
+                        + "   " + ct.length + " 字节密文 → " + out.length()
+                        + " 字符（umid 与明文按用户要求不打）");
             } catch (Throwable ignore) { }
         }
         return out;
@@ -1398,21 +1402,84 @@ public class Ledao {
 
     /**
      * ★ 每分钟步频：App 实测 {"interval":60,"list":[138,117,...,148]}
-     *   条数 = 跑步分钟数；总步数 ≈ 距离 / 步长（跑步约 1.55 m/步）
+     *   条数 = 跑步分钟数；总步数 ≈ 距离 / 步长
+     *
+     * <p>★★★ 2026-10-17：步长不再是固定 1.55 m/步 —— 那是**乐观值**，与真机对不上。
+     *   真机三组实测（前两组来自 `work/ae.log` 的 `LocalDirectionRunRecord`，
+     *   第三组来自服务端**收下并计分**的那一次 `work/session/real_stop.json`）：
+     * <pre>
+     *   距离      用时    步数    m/步     速度
+     *   0.39 km   789 s   385    1.01    0.49 m/s   （龟速走 —— 步频高、步幅小）
+     *   0.97 km   299 s   636    1.52    3.24 m/s
+     *   2.06 km   616 s   1556   1.32    3.34 m/s   ← 黄金基线（record_status=1）
+     * </pre>
+     *   三条一起读：**m/步 随速度单调变大**（1.0 → 1.5）。固定 1.55 等于把这个趋势
+     *   抹平成一条水平线，而且正好压在区间上沿 —— 慢跑时步数会报得偏少。
+     *   现在改成按速度取值，端点贴着实测值。
+     *
+     * <p>另一半是**形状**：真机那一段 list 的均值是 171 而首段只有 51 —— 首段是残段；
+     *   616 s 只给 10 段（= 600 s）覆盖不到 616 s，**末段同样是残段**。
+     *   这里用 {@code ceil(usedSec/60)} 段（616 s → 11 段 = 660 s，覆盖得住），
+     *   语义就是「首末两段各是一分钟的一部分」，与真机同构。
+     *
+     * <p>Σ(list) 恒等于这里的总步数 —— 收尾报文里 {@code step_num} 与 {@code step_info}
+     *   本来就是**同源**的（`step_num` 由 list 求和而来，见 `fin.put("step_num", …)`），
+     *   这一版没有拆开这个配对，只是把"总数"从固定 1.55 换成了速度模型。
      */
     public String perStep(long usedSec, double distanceM) {
-        int minutes = Math.max(1, (int) Math.round(usedSec / 60.0));
-        int totalSteps = Math.max(50, (int) (distanceM / 1.55));
-        double base = totalSteps / (double) minutes;
-        StringBuilder sb = new StringBuilder("{\"interval\":60,\"list\":[");
-        long sum = 0;
-        for (int i = 0; i < minutes; i++) {
-            int v = (int) Math.max(60, base * (0.88 + rnd.nextDouble() * 0.24));
-            sum += v;
-            if (i > 0) sb.append(',');
-            sb.append(v);
+        /* ── ① 总步数：速度 → m/步 ─────────────────────────────────────────
+         * 四个真机点（`work/ae.log` 三组 + 服务端收下那次）：
+         *     0.49 m/s → 1.01     1.2 → 1.35（走路→慢跑的拐点，内插）
+         *     3.24 m/s → 1.52     3.34 m/s → 1.32
+         * 读法：**m/步 随速度单调变大**（1.0 → 1.5），跑的比走的步子大 ——
+         *   这是常识，也是四条实测共同指向的方向（固定 1.55 只有"大"没有"变"）。
+         *   1.2 m/s 以上用两个跑步点解出的一次式 stride = 7.7982 - 1.9399·v；
+         *   以下按「走(0.49→1.00) ↔ 慢跑(1.2→1.35)」内插。
+         *   上下夹 1.00~1.55 —— 两端都贴着真机值，不会外推出人腿做不到的步长。 */
+        double sec = Math.max(1.0, usedSec);
+        double v = distanceM / sec;
+        double stride;
+        if (v <= 0.49) stride = 1.00;
+        else if (v < 1.2) stride = 1.00 + (1.35 - 1.00) * (v - 0.49) / (1.2 - 0.49);
+        else stride = 7.7982 - 1.9399 * v;
+        stride = clamp(stride, 1.00, 1.55);
+        int total = Math.max(50, (int) Math.round(distanceM / stride));
+
+        /* ── ② 首段残段：按「整分钟平均步频」反推那一截，直接嵌进总数 ─────── */
+        int minutes = Math.max(1, (int) Math.ceil(sec / 60.0));
+        double avgPerMin = total / sec * 60.0;
+        double frac = Math.max(0.10, Math.min(1.0, sec - 60.0 * (minutes - 1)) / 60.0);
+        int first = (int) Math.round(avgPerMin * frac);
+        /* 只有一段时，那一段**就是**总数 —— 不这么写的话下面的循环一次都不进，
+         * Σ 会比 total 少（`(int)` 截断到 0 时更糟）。 */
+        if (minutes == 1) first = total;
+
+        /* ── ③ 其余各段把余量分掉：一边发一边消费，末段取剩余（恒 ≥ 0） ───── */
+        StringBuilder sb = new StringBuilder("{\"interval\":60,\"list\":[").append(first);
+        int left = total - first;
+        for (int i = 1; i < minutes; i++) {
+            int k = minutes - i;                       /* 还要发几段 */
+            int vv = (k == 1) ? left
+                    : (int) Math.round(left / (double) k * (0.88 + rnd.nextDouble() * 0.24));
+            if (vv < 0) vv = 0;
+            sb.append(',').append(vv);
+            left -= vv;
         }
-        return sb.append("]}").toString();
+        /* 万一段数不足（usedSec < 60 时只有一段），把差额补在最后一段上，
+         * 保证 Σ(list) == total 这条恒等式在任何输入下都成立。 */
+        if (left != 0) sb.append(',').append(Math.max(0, left));
+        sb.append("]}");
+
+        lastStepTotal = total;
+        return sb.toString();
+    }
+
+    /**
+     * 最近一次 {@link #perStep} 算出来的总步数；还没算过时是 0。
+     * <p>给收尾路径与离线测试用：值应当恒等于那一段 `list` 的和。
+     */
+    public int lastStepTotal() {
+        return lastStepTotal;
     }
 
     // ==================================================================
