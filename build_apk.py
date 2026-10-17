@@ -52,7 +52,6 @@ APPS = [
         "build": "ledao_apk_build",         # %TEMP% 下的纯英文构建目录
         "name": "宇达步道乐跑助手",           # 仓库里那个目录名 / APK 名的前缀
     },
-    
 ]
 
 # ★★★ 签名密钥必须放在**项目目录**里，不能放 %TEMP%。
@@ -85,9 +84,15 @@ def specs():
       白名单文件，公开库里只有 app/ —— 不跳过的话，`python build_apk.py` 会因为
       找不到那些目录直接退出，下载源码的人第一步就卡住（dry-run 时真踩到）。
       哪个条目进哪个库，由 publish.py 按每条的 `# @app:<key>` 标记删（见 APPS 表）。
+
+    ★ 2026-10-17：条目上写 `"publish": False` 的，**绝不进这份清单**。
+      这是"哪些文件会进仓库"的第一道闸；publish.py 的 REPOS 表是第二道闸。
     """
     out = []
     for a in APPS:
+        # ★ 先过滤"绝不发布"的条目，再判目录存在与否
+        if not a.get("publish", True):
+            continue
         if not os.path.isdir(os.path.join(ROOT, a["dir"])):
             continue
         code, ver, pkg = manifest_info(a["dir"])
@@ -117,6 +122,7 @@ def run(cmd, desc, check=True):
 
 def build_one(a):
     code, ver, pkg = manifest_info(a["dir"])
+    min_sdk = str(a.get("min_sdk", 21))
     src_app = os.path.join(ROOT, a["dir"])
     build = os.path.join(tempfile.gettempdir(), a["build"])
     app = os.path.join(build, "app")
@@ -163,7 +169,7 @@ def build_one(a):
            "-I", ANDROID_JAR,
            "--manifest", os.path.join(app, "AndroidManifest.xml"),
            "--java", os.path.join(build, "gen"),
-           "--min-sdk-version", "21",
+           "--min-sdk-version", min_sdk,
            "--target-sdk-version", "28",
            "--version-code", code, "--version-name", ver]
     # ★ 必须显式指定 assets 目录，否则证书等资源不会被打进 APK
@@ -201,7 +207,7 @@ def build_one(a):
     print("\nclass %d 个 → classes.jar（%.1f KB）"
           % (len(classfiles), os.path.getsize(classes_jar) / 1024.0))
 
-    dex_cmd = [D8, "--release", "--min-api", "21", "--lib", ANDROID_JAR,
+    dex_cmd = [D8, "--release", "--min-api", min_sdk, "--lib", ANDROID_JAR,
                "--output", dexdir, classes_jar]
     dex_what = "d8 生成 classes.dex"
     run(dex_cmd, dex_what)
