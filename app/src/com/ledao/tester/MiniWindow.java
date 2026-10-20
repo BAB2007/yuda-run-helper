@@ -91,14 +91,50 @@ public final class MiniWindow {
     private static final int TOP_DP = 44;
 
     /**
-     * 上一拍隔了多久才算"卡住了一下"（毫秒）。
+     * 上一拍隔了多久才算"卡住了一下"（毫秒）—— **「没在跑」那一屏用的**（心跳 1 秒一拍）。
      *
-     * <p>跑步每拍 1 秒，抖一下不算。v1.0.34 从 4000 提到 6000：真机（荣耀 X80）
-     * 上 4 秒会误报 —— 主线程被 GC 或者窗口操作占住 4 秒多，用户看到的字一个没少，
-     * 却挂着个 ❄。这个窗口的尺子分不清"系统把进程冻了"和"助手自己忙着"，
-     * 那就把门槛设在"只有真卡住才会超"的地方。
+     * <p>跑步那一屏不要用这个数，用 {@link #staleSecIn}（见下面的说明）。
+     *
+     * <p>v1.0.34 从 4000 提到 6000：真机（荣耀 X80）上 4 秒会误报 —— 主线程被 GC
+     * 或者窗口操作占住 4 秒多，用户看到的字一个没少，却挂着个 ❄。
      */
     public static final long STALE_MS = 6000;
+
+    /**
+     * ★★★ v1.0.36（2026-10-21）：跑步那一屏判断"卡住"的**计划节拍**（毫秒）。
+     *
+     * <p>为什么突然要这个数：用户拿真机截图来问「为什么每次小窗都会显示卡五秒」。
+     * 查下来是**阈值比错了标尺** —— {@link #STALE_MS} 是按"心跳 1 秒一拍"定的，
+     * 而跑步那一屏的 {@code tickRun} 是跟着**跑步节拍**来的：{@code Ledao} 每 **6 秒**
+     * 一拍（协议侧就是 6 秒一个点，见 {@code MainActivity} 里 {@code L.run(..., 6.0, ...)}）。
+     * 于是正常间隔本来就贴着 6000 ms，网络抖个几十毫秒就"超阈值"，
+     * {@code staleSec} 再减掉那 1 秒，报出来**永远是「卡5s」** —— 一句完全的假话。
+     *
+     * <p>现在跑步那一屏改成"计划节拍 + 余量"：只有比计划多出 {@link #RUN_STALE_MARGIN_MS}
+     * 以上才记账，报出来的秒数也是**超出计划的真实秒数**。
+     */
+    private static volatile long tickMs = 6000;
+
+    /** 跑步那一屏的余量：6 秒的计划之外再多 4 秒才算"卡"（网络慢一拍不算） */
+    public static final long RUN_STALE_MARGIN_MS = 4000;
+
+    /**
+     * 把这一场跑步的节拍告诉小窗（由 {@code MainActivity} 在开跑那一刻调）。
+     * 小于 1 秒的值一律按 1 秒记 —— 节拍再快，容错也不能没有。
+     */
+    public static void setTickSec(double sec) {
+        tickMs = Math.max(1000L, (long) (sec * 1000.0));
+        /* ★ v1.0.36：新的一场开始 —— 上一场留下的「卡Ns」不许带进来
+         *   （staleMarker 是静态的，不清就会让新一场开局就挂个记号）。 */
+        staleMarker = 0;
+        staleUntil = 0;
+    }
+
+    /** 当前认为的跑步节拍（毫秒）—— 单测与日志用 */
+    public static long tickMs() {
+        return tickMs;
+    }
+
 
     /** 卡住的痕迹在标题上留多久（毫秒）—— 30 秒太短，人切回来已经没了 */
     public static final long STALE_KEEP_MS = 60000;
@@ -194,6 +230,27 @@ public final class MiniWindow {
         long over = nowMs - lastMs;
         if (over <= STALE_MS) return 0;
         return Math.max(1, (over - 1000) / 1000);
+    }
+
+    /**
+     * ★★★ v1.0.36：跑步那一屏的"卡住"判据 —— 比的是**计划节拍**，不是 1 秒心跳。
+     *
+     * <p>为什么必须换尺子：跑步每一拍的计划间隔就是 6 秒（{@code Ledao} 的
+     * {@code intervalSec}），拿 6 秒阈值去卡 6 秒的计划间隔，正常一拍就已经贴着线，
+     * 网络抖几十毫秒就报「卡5s」—— 用户看到的假话就是这么来的。
+     *
+     * <p>现在的口径：{@code 实际间隔 − 计划节拍} 才是"多出来的"，多出
+     * {@link #RUN_STALE_MARGIN_MS} 以上才记账；报出来的也是这个**真实超出量**。
+     * 真被冻 30 秒 → 报「卡30s」；网络慢一拍多花 3 秒 → 不吭声（那本来就不算冻）。
+     *
+     * @param planMs 这一场的计划节拍（{@link #setTickSec} 设进来的）
+     */
+    public static long staleSecIn(long nowMs, long lastMs, long planMs) {
+        if (lastMs <= 0) return 0;
+        long plan = planMs > 0 ? planMs : tickMs;
+        long over = nowMs - lastMs - plan;
+        if (over <= RUN_STALE_MARGIN_MS) return 0;
+        return Math.max(1, over / 1000);
     }
 
     /** 「停」第一次点只是"上膛"，{@link #STOP_ARM_MS} 之内再点一次才算真的停 */
@@ -571,7 +628,10 @@ public final class MiniWindow {
         lastTickAt = now;
         main().post(() -> {
             if (view == null || !runMode()) return;         // ★ 期间被切成了别的 mode 就别乱写
-            long stale = staleSec(now, last);
+            /* ★★★ v1.0.36：这里以前是 staleSec(now, last) —— 拿 1 秒心跳的阈值
+             *   （6 秒）去卡 6 秒的跑步节拍，正常一拍就贴着线，于是**每次**都报
+             *   「卡5s」（用户 2026-10-21 截图来问的就是这个）。现在按计划节拍比。 */
+            long stale = staleSecIn(now, last, tickMs);
             if (stale > 0) {
                 staleMarker = stale;
                 staleUntil = now + STALE_KEEP_MS;           // 这 1 分钟里第三行一直带记号
