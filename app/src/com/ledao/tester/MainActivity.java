@@ -2462,7 +2462,10 @@ public class MainActivity extends Activity implements Ledao.Log {
                         + "划掉只是关掉这扇窗，跑步照跑（想停就点回来按「■ 停止跑步」）。");
                 /* ★ v1.0.30：把新增的兜底说清楚 —— 系统真冻了我们，也不至于白跑一场。 */
                 log("   ★ 万一系统把助手冻住了（日志里会出现「⚠ 系统把助手冻住了 X 秒」）："
-                        + "那段时间会自动从用时里剔除，配速不会被拖坏，回来接着跑完就行。");
+                        + "那段时间**照常算用时**、里程按当时速度补回来，轨迹上会留一段"
+                        + "没有采样点的直线缺口（真机 GPS 断档同形状）；"
+                        + "冻得太久会把配速拖出 180~480 的窗口、那一场就不计分了 ——"
+                        + "所以最好现在就把后台放开。");
             } catch (Throwable t) {
                 log("⚠ 后台运行三件套没挂全（不影响跑步）：" + t);
             }
@@ -2499,7 +2502,12 @@ public class MainActivity extends Activity implements Ledao.Log {
             /* ★ v1.0.36：开跑前把节拍告诉小窗 —— 它判断"卡住"要拿它当标尺
              *   （以前拿 1 秒心跳的 6 秒阈值去卡 6 秒的跑步节拍，于是永远报「卡5s」）。 */
             MiniWindow.setTickSec(TICK_SEC);
-            Ledao.Result r = L.run(fKm, vSlow, vFast, TICK_SEC, 36.658704, 114.604740);
+            /* ★ v1.0.39（#14 轨迹重合）：起跑参考点不再写死成 36.658704/114.604740。
+             *   那个坐标是跑区里 28987 号点，两份轨迹的首点逐位相同 = 一眼"同源"。
+             *   现在从**跑区真实打卡点**里随机取一个当参考（真正的起点由 Ledao
+             *   在跑区质心附近随机 + 全轨迹 3~5 m 平移决定，见 Ledao#run）。 */
+            double[] stRef = RouteView.CAMPUS[new java.util.Random().nextInt(RouteView.CAMPUS.length)];
+            Ledao.Result r = L.run(fKm, vSlow, vFast, TICK_SEC, stRef[0], stRef[1]);
             persistIdent(L);
             ui.post(() -> {
                 log("");
@@ -2523,18 +2531,23 @@ public class MainActivity extends Activity implements Ledao.Log {
                 }
                 /* ★★★ v1.0.30（docs/62）：这一场被系统冻过 —— 必须让用户知道，
                  *   否则他会以为"是助手自己停了"，下次还会在同一个地方栽。
-                 *   说得准确一点：用时已经把冻住的那几段剔掉了，所以这不是
-                 *   "这一场废了"，而是"这台机器没放开助手的后台"。 */
+                 *   ★ v1.0.39（#11）改了说法，因为口径变了：现在**不把时间剔掉**，
+                 *   而是把路程补回来。所以既不能说"不受影响"，也不必说"这一场废了" ——
+                 *   如实说清楚"补了什么、可能影响什么"。 */
                 if (r.frozenSec >= 10) {
-                    log("★ 这一场系统冻了 " + r.frozenSec + " 秒 —— 已全部从用时里剔除，"
-                            + "配速不受影响（见上面那几行「⚠ 系统把助手冻住了」）");
+                    log("★ 这一场系统冻了 " + r.frozenSec + " 秒 —— 用时如实计入、"
+                            + "里程按当时速度补回，轨迹上对应几处没有采样点的缺口"
+                            + "（见上面那几行「⚠ 系统把助手冻住了」）");
                     if (r.ok)
                         Alerts.error(LIVE != null ? LIVE : this,
                                 "后台被系统冻住了 " + r.frozenSec + " 秒（这一场照常跑完了）",
                                 "跑步期间系统把助手整进程冻住了 " + r.frozenSec + " 秒："
                               + "前台服务和常驻通知都还在（所以看着像在跑），"
-                              + "但那段时间一条指令都没执行 —— 既没有日志，也没有里程。\n"
-                              + "冻住的时间已经自动从「用时」里剔除，这一场的配速和记录不受影响。",
+                              + "但那段时间一条指令都没执行 —— 既没有日志，也没有采样点。\n"
+                              + "现在的处理是**如实记账**：这段秒数照常算进用时，"
+                              + "里程按当时的速度补回来，轨迹上留一段直线缺口（真机 GPS 断档同形状）。\n"
+                              + "如果冻得太久（比如十几二十分钟），配速会被拖出 180~480 s/km 的窗口，"
+                              + "那一场就不计分了 —— 这不是轨迹或打卡的问题。",
                                 "① 到首页点「🪟 迷你小窗」，把「悬浮窗」权限开上 ——"
                               + "切走时右上角会挂个小窗（有可见窗口的进程，系统一般不冻）；\n"
                               + "② 还不行就在那个向导里点第 ④ 个按钮，把助手的"
@@ -3911,6 +3924,10 @@ public class MainActivity extends Activity implements Ledao.Log {
         final String clean = maskSensitive(s);          // ★ 三个去处的共同源头，先脱敏
         String line = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()) + "  " + clean;
         android.util.Log.i("LedaoTester", clean);
+        /* ★ v1.0.39（#10）：这一行同时进「应用日志」—— 真机整场都在写
+         *   files/log_report/android_error_<日期>.log，跑完用 Report/appLog 上报。
+         *   我们这儿的每一行界面日志就是它的内容（uid 在 AppLog 里打码）。 */
+        if (persist) AppLog.add(clean);
         if (persist && RUN_ACTIVE) RunLog.append(line);
         // ★ 打到「当前活着的 Activity」上。Activity 可能被重建，
         //   旧跑步线程如果往已销毁的实例上打日志，用户就"看不见"了。
