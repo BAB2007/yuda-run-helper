@@ -233,6 +233,39 @@ public class Ledao {
      */
     public boolean randomRoute = false;
 
+    // ==================================================================
+    //  ★★★ v1.0.39：三个「本场参数」—— 每一场都不一样，破"同模板"（docs/71 §四.4）
+    // ==================================================================
+
+    /**
+     * 本场整体 GPS 平移（**度**，北向）。每场 3~5 米、随机方位。
+     *
+     * <p>为什么要它（#14 轨迹重合）：两个账号跑同一条路网、同一对打卡点，如果连
+     * 首点坐标都一模一样，服务端把两份轨迹一叠就是**逐点重合** —— 真人"一起跑"
+     * 也有几米的定位差，绝不重合。所以整条轨迹按 3~5 m 随机平移一次（连同
+     * log_data 里打卡那一刻的实时坐标、末点、截图上的折线一起移），
+     * 叠加上 {@link GpsNoise} 的逐点误差，两份轨迹就再也叠不上了。
+     */
+    public double offLatDeg = 0, offLonDeg = 0;
+
+    /**
+     * 本场步长系数（0.92~1.08）。真机两条跑步样本是 **1.52** 与 **1.32** m/步
+     * （docs/19 / docs/39 §7.5），差 17% —— 那不是公式误差，是**人与日子不同**。
+     * 把步长钉死成一条公式（以前固定 1.55）等于把这个 17% 变成系统性偏差；
+     * 现在按场抽一个系数、曲线锚在**服务端计分过的那一单**（1.32）上（#8）。
+     */
+    public double strideScale = 1.0;
+
+    /** 最近一次 {@link #perStep} 用到的 m/步（给日志和测试看） */
+    public double lastStride = 0;
+
+    /**
+     * 最近一次 {@link #perStep} 算出来的**步频**（步/分）—— 陀螺仪/加速度流用它
+     * 决定摆动频率（{@link #packSensor}）。真人步频与步长、速度是同一件事的三个面，
+     * 以前传感器流跟步数是各写各的，现在两者同源（#7）。
+     */
+    public double lastCadence = 0;
+
     /** 校园水面位图（由 MainActivity 注入）—— 路线生成时避湖 */
     public WaterGrid water = null;
     /** 校园可跑街道栅格（A* 寻路用）。为 null 时回落到旧的样条路线。 */
@@ -710,31 +743,52 @@ public class Ledao {
     // ==================================================================
     //  HTTP
     // ==================================================================
+    /**
+     * 发一条 x-www-form-urlencoded 请求。
+     *
+     * <p>★★★ v1.0.39（#4「连接指纹」，docs/71 §三.7）：**不再 `Connection: close`**。
+     *
+     * <p>真机走 okhttp 连接池 —— HAR 里 6 分钟只建了 50 条隧道，20 秒一次的心跳
+     * {@code Run/setRunLocationRecord} 全在复用同一条连接；而我们以前每条请求都发
+     * `Connection: close` 再 {@code disconnect()}，一场 20 分钟的跑步是**几百条短连接**。
+     * 同一个 UA、同一台"真机"，却每 6 秒重连一次 —— 这是连接层唯一一条一眼能看出来的差别
+     * （服务端侧 TLS/TCP 统计就够，不需要看业务字段）。
+     *
+     * <p>改法：把响应**读到 EOF** 再关流，然后**不 disconnect()** ——
+     * JDK 的 {@code HttpKeepAliveCache} 会把这条连接放回池里给下一次用
+     * （Android 上 HttpURLConnection 背后同样是 okhttp 的连接池）。
+     * 只有出异常时才 disconnect：坏连接留在池里会让后面所有请求一起失败。
+     */
     private String post(String path, String body, int timeoutSec) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(BASE + API + path).openConnection();
-        c.setRequestMethod("POST");
-        c.setDoOutput(true);
-        c.setConnectTimeout(timeoutSec * 1000);
-        c.setReadTimeout(timeoutSec * 1000);
-        c.setRequestProperty("User-Agent", UA);
-        c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8");
-        c.setRequestProperty("Connection", "close");
-        byte[] d = body.getBytes("UTF-8");
-        c.setFixedLengthStreamingMode(d.length);
-        OutputStream os = c.getOutputStream();
-        os.write(d);
-        os.flush();
-        os.close();
-        int code = c.getResponseCode();
-        InputStream is = code >= 400 ? c.getErrorStream() : c.getInputStream();
-        ByteArrayOutputStream bo = new ByteArrayOutputStream();
-        byte[] buf = new byte[8192];
-        int n;
-        while (is != null && (n = is.read(buf)) > 0) bo.write(buf, 0, n);
-        c.disconnect();
-        String resp = new String(bo.toByteArray(), "UTF-8").trim();
-        dump(path, body, resp);
-        return resp;
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(BASE + API + path).openConnection();
+            c.setRequestMethod("POST");
+            c.setDoOutput(true);
+            c.setConnectTimeout(timeoutSec * 1000);
+            c.setReadTimeout(timeoutSec * 1000);
+            c.setRequestProperty("User-Agent", UA);
+            c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8");
+            byte[] d = body.getBytes("UTF-8");
+            c.setFixedLengthStreamingMode(d.length);
+            OutputStream os = c.getOutputStream();
+            os.write(d);
+            os.flush();
+            os.close();
+            int code = c.getResponseCode();
+            InputStream is = code >= 400 ? c.getErrorStream() : c.getInputStream();
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while (is != null && (n = is.read(buf)) > 0) bo.write(buf, 0, n);
+            if (is != null) { try { is.close(); } catch (Throwable ignore) { } }
+            String resp = new String(bo.toByteArray(), "UTF-8").trim();
+            dump(path, body, resp);
+            return resp;
+        } catch (Exception e) {
+            if (c != null) { try { c.disconnect(); } catch (Throwable ignore) { } }
+            throw e;
+        }
     }
 
     /**
@@ -1363,41 +1417,216 @@ public class Ledao {
      *     "ax":"-0.00","ay":"0.00","az":"0.00","gx":"-2.07","gy":"-0.08","gz":"9.36"}, ...]
      *   n=经度 a=纬度（字符串）· t=毫秒时间戳 · 采样间隔实测 60~72ms · 偶发空档
      */
+    /**
+     * 陀螺仪 / 加速度文件（type=8）
+     * ★ 来自 App 真实上传文件的实证格式 —— **明文 JSON，不加密**：
+     *   [{"n":"114.602066","a":"36.658878","t":1790681601464,
+     *     "ax":"-0.00","ay":"0.00","az":"0.00","gx":"-2.07","gy":"-0.08","gz":"9.36"}, ...]
+     *   n=经度 a=纬度（字符串）· t=毫秒时间戳 · 采样间隔实测 60~72ms · 偶发空档
+     *
+     * <p>★★★ v1.0.39（#7「陀螺仪伪随机」，docs/71 §二.7）：**从"伪随机游走"改成"从轨迹推出来"**。
+     *
+     * <p>旧实现是三个独立的一维随机游走（每点 ±0.6 地乱走），跟这一场**跑了多快、
+     * 转了多少弯、步子多密**毫无关系。它是"看起来像传感器数据"，但只要把同一场
+     * 的其它文件拿出来对比就露馅：
+     * <ul>
+     *   <li>轨迹里有明显转弯，陀螺仪那一秒却毫无反应（真机转弯时竖直轴角速度必然起来）；</li>
+     *   <li>{@code step_info} 说这一分钟 168 步（2.8 Hz），加速度里却找不到 2.8 Hz 的周期；</li>
+     *   <li>两份不同账号的文件，统计形状一模一样（同一套随机游走参数）。</li>
+     * </ul>
+     *
+     * <p>现在的口径是"三个物理量，一个来源"：
+     * <ol>
+     *   <li><b>航向变化率</b>（{@link #bearing}逐段算出来）→ 竖直轴角速度 gz：直道≈0、
+     *       拐角冲一下，量级按真机样本压在 ±几十 deg/s（真机那三个数就是 -2.07 / -0.08 / 9.36）；</li>
+     *   <li><b>步频</b>（{@link #perStep} 算出来的 {@link #lastCadence}）→ 摆动频率：
+     *       跑步 2.4~3.0 Hz —— 与其自己编一个频率，不如用这一场**真的**步数去除时长；</li>
+     *   <li><b>速度</b> → 摆幅：走得慢摆得小，跑起来摆得开。</li>
+     * </ol>
+     * 所以同一场里"轨迹转弯 / 步频 / 加速度周期"三者自洽，跨场又各自不同（步频、
+     * 时长、路线都不一样）。⚠ 仍未验证：服务端到底拿这个文件做什么（docs/71 §八.2）。
+     */
     public byte[] packSensor(JSONArray traj, long t0Sec, long usedSec) throws Exception {
         JSONArray out = new JSONArray();
         int n = traj.length();
         if (n < 2) return "[]".getBytes("UTF-8");
-        double gx = -2.07, gy = -0.09, gz = 9.36;
-        long tMs = t0Sec * 1000L, endMs = tMs + usedSec * 1000L;
+
+        /* ── 0) 每段的用时与航向 —— 后面两个量都从这里来 ───────────────────── */
+        double segSec = Math.max(1.0, usedSec) / (double) (n - 1);
+        double[] head = new double[n];
+        head[0] = bearing(traj.getJSONObject(0), traj.getJSONObject(1));
+        for (int k = 1; k < n; k++)
+            head[k] = (k + 1 < n) ? bearing(traj.getJSONObject(k), traj.getJSONObject(k + 1)) : head[k - 1];
+
+        /* ── 1) 两个频率：步频（本场真值）+ 呼吸（0.28~0.38 Hz） ───────────── */
+        double cadence = lastCadence > 40 ? lastCadence : 170.0;
+        double stepHz = Math.max(1.6, Math.min(3.4, cadence / 60.0));
+        double breathHz = 0.28 + rnd.nextDouble() * 0.10;
+
+        long tMs = t0Sec * 1000L;
+        long endMs = tMs + usedSec * 1000L;
+        long t0ms = t0Sec * 1000L;
         int[] gaps = {59, 60, 61, 66, 67, 68, 69, 70, 71, 72};
+        /* 起始姿态照抄真机样本（gx=-2.07 / gy=-0.08 / gz=9.36），之后平滑跟随 */
+        double gx = -2.07, gy = -0.09, gz = 9.36;
         int i = 0;
         while (tMs < endMs) {
-            int k = (int) Math.min(n - 1, (tMs - t0Sec * 1000L) * (long) n
-                    / Math.max(1L, usedSec * 1000L));
+            double tt = (tMs - t0ms) / 1000.0;
+            int k = (int) Math.min(n - 1, Math.round(tt / segSec));
             JSONObject tp = traj.getJSONObject(k);
-            gx = clamp(gx + (rnd.nextDouble() - 0.5) * 1.2, -9.0, 9.0);
-            gy = clamp(gy + (rnd.nextDouble() - 0.5) * 1.2, -9.0, 9.0);
-            gz = clamp(gz + (rnd.nextDouble() - 0.5) * 1.2, -9.0, 12.0);
+            double spd = Math.max(0.0, tp.optDouble("s", 2.5));        // m/s
+            double yaw = 0;
+            if (k > 0 && k < n - 1) {
+                double d = head[k] - head[k - 1];
+                while (d > 180) d -= 360;
+                while (d < -180) d += 360;
+                yaw = d / segSec;                                      // deg/s
+            }
+            double sAmp = Math.min(1.6, spd / 3.3);                    // 0~1.6：速度越大摆幅越大
+            double ph = 2 * Math.PI * stepHz * tt;
+            double br = 2 * Math.PI * breathHz * tt;
+            /* 陀螺仪：目标值 = 转弯角速度 + 步频摆动 + 呼吸漂移，再做一阶平滑（真机也是滤过的） */
+            gx = clamp(0.55 * gx + 0.45 * (8.0 * sAmp * Math.sin(ph) + 1.4 * Math.sin(br)), -60, 60);
+            gy = clamp(0.55 * gy + 0.45 * (5.0 * sAmp * Math.sin(ph + 1.9) + 1.1 * Math.sin(br + 0.7)), -60, 60);
+            gz = clamp(0.55 * gz + 0.45 * (yaw * 1.6 + 2.2 * sAmp * Math.sin(ph + 0.6)), -60, 60);
+            /* 加速度（已去重力）：**每落一步一个峰** —— 所以频率就是步频，不是它的两倍。
+             * （跑步的竖直加速度是一步一冲，左右脚的差别体现在 ax/ay 的相位上。） */
+            double aAmp = 1.1 + 2.2 * sAmp;
+            double az = aAmp * Math.sin(ph) + 0.25 * rnd.nextGaussian();
+            double ax = 0.45 * aAmp * Math.sin(ph + 1.2) + 0.20 * rnd.nextGaussian();
+            double ay = 0.35 * aAmp * Math.sin(ph + 2.4) + 0.20 * rnd.nextGaussian();
             JSONObject o = new JSONObject();
             o.put("n", String.format(Locale.US, "%.6f", tp.optDouble("o", 0)));
             o.put("a", String.format(Locale.US, "%.6f", tp.optDouble("a", 0)));
             o.put("t", tMs);
-            o.put("ax", String.format(Locale.US, "%.2f", (rnd.nextDouble() - 0.5) * 0.4));
-            o.put("ay", String.format(Locale.US, "%.2f", (rnd.nextDouble() - 0.5) * 0.4));
-            o.put("az", String.format(Locale.US, "%.2f", (rnd.nextDouble() - 0.5) * 0.4));
+            o.put("ax", String.format(Locale.US, "%.2f", ax));
+            o.put("ay", String.format(Locale.US, "%.2f", ay));
+            o.put("az", String.format(Locale.US, "%.2f", az));
             o.put("gx", String.format(Locale.US, "%.2f", gx));
             o.put("gy", String.format(Locale.US, "%.2f", gy));
             o.put("gz", String.format(Locale.US, "%.2f", gz));
             out.put(o);
             i++;
             tMs += gaps[rnd.nextInt(gaps.length)];
-            if (i % 97 == 0) tMs += 800 + rnd.nextInt(3200);
+            if (i % 97 == 0) tMs += 800 + rnd.nextInt(3200);           // 真机也有偶发空档
         }
         return out.toString().getBytes("UTF-8");
     }
 
+    /** a→b 的方位角（度，正北 0、顺时针 0~360）—— 陀螺仪竖直轴角速度就是它的变化率 */
+    static double bearing(JSONObject a, JSONObject b) {
+        double la1 = Math.toRadians(a.optDouble("a", 0));
+        double la2 = Math.toRadians(b.optDouble("a", 0));
+        double dLon = Math.toRadians(b.optDouble("o", 0) - a.optDouble("o", 0));
+        double y = Math.sin(dLon) * Math.cos(la2);
+        double x = Math.cos(la1) * Math.sin(la2) - Math.sin(la1) * Math.cos(la2) * Math.cos(dLon);
+        double d = Math.toDegrees(Math.atan2(y, x));
+        return d < 0 ? d + 360 : d;
+    }
+
+    /**
+     * ★ v1.0.39（#10「Report/appLog」）：把这一场的客户端日志传上去。
+     *
+     * <p>真机的两步（{@code work/session/auto_20261006_212849.jsonl} 实测）：
+     * <pre>
+     *   PUT  https://lptiyu-data.oss-cn-hangzhou.aliyuncs.com/Public/Upload/file/app_log/2026-10-06/930/&lt;uuid&gt;.log
+     *        Content-Type: application/octet-stream   （body 就是那份日志原文）
+     *   POST Report/appLog   fileName=Public%2FUpload%2Ffile%2Fapp_log%2F2026-10-06%2F930%2F&lt;uuid&gt;.log
+     *        （明文 + 签名A，fileName 是**URL 编码值**，签名口径按解码后的值算 —— 我们的 params/sign 正是这样）
+     * </pre>
+     *
+     * <p>⚠ 它**不参与成绩**：失败只打一行日志，不影响轨迹/截图/陀螺仪那三件，
+     * 也不影响 stopRun。真机这条链路同样是后台跑的。
+     */
+    private void uploadAppLog(JSONObject sts, String day) {
+        try {
+            byte[] body = AppLog.bytes();
+            if (body.length < 32) {
+                log.log("      ④ 应用日志：本场没有攒到内容，跳过");
+                return;
+            }
+            String key = "Public/Upload/file/app_log/" + day + "/"
+                    + (1 + rnd.nextInt(999)) + "/" + UUID.randomUUID() + ".log";
+            int code = ossPutRetry(sts, key, body, "application/octet-stream");
+            if (code != 200) {
+                log.log("      ④ 应用日志 HTTP " + code + "（不影响成绩，跳过）");
+                return;
+            }
+            TreeMap<String, String> ex = new TreeMap<>();
+            ex.put("fileName", key);
+            /* ★ 用 callReadOnly：这条是"顺手多报一份旁证"，**绝不能**在这儿触发
+             *   一次性的 refresh_token 续期 —— 那会把收尾要用的令牌烧掉（docs/46）。 */
+            JSONObject r = callReadOnly("Report/appLog", ex, 0, false);
+            log.log("      ④ 应用日志 HTTP 200  " + body.length + " 字节 / " + AppLog.lines()
+                    + " 行  → Report/appLog status=" + r.optInt("status")
+                    + "  " + trim(r.toString(), 120));
+        } catch (Throwable t) {
+            log.log("      ④ 应用日志没传成（不影响成绩）：" + t);
+        }
+    }
+
     private static double clamp(double v, double lo, double hi) {
         return v < lo ? lo : (v > hi ? hi : v);
+    }
+
+    /**
+     * GPS 定位误差模型 —— **一阶自回归**（AR(1)），不是白噪声。
+     *
+     * <p>为什么要单开一个类（#6「定位精度字段」，docs/71 §二.9）：
+     * 服务端下发 {@code android_gps_start/process/log_precision = 30/100/100}，
+     * 那是官方客户端**筛选定位点**的精度门槛 —— 也就是说真机上的每一个点都带着
+     * 几米到几十米的误差，而且是**连着错**的（误差在时间上强相关：多径、遮挡、
+     * 电离层漂移都是慢变量）。真机轨迹因此是"整体顺着路走、局部毛刺连着抖"。
+     *
+     * <p>我们以前给的是**样条上的精确点**：点距整齐、转弯圆滑、误差恒为 0 ——
+     * 只要有人把轨迹放大看，或者把两份轨迹叠起来比间距分布，它就不是 GPS。
+     *
+     * <p>模型：{@code e_t = φ·e_{t-1} + σ·√(1-φ²)·N(0,1)}，φ=0.75~0.85（相关性强），
+     * σ 按阶段给：**起跑头 15 秒 8 m**（搜星/冷启动，正是 start_precision=30 的用意）、
+     * 跑起来 4.5 m、最后 10 秒 6 m（停下来时定位反而飘）。误差夹在 ±cap 内，
+     * cap=9 m 是为了让"相邻点距"仍稳稳落在 {@code android_gps_max_distance=30} 之内。
+     */
+    static final class GpsNoise {
+        private final Random r;
+        private final double sigma, phi, cap;
+        double n = 0, e = 0;                 // 北 / 东 方向误差（米）
+
+        GpsNoise(Random r, double sigma, double phi, double cap) {
+            this.r = r;
+            this.sigma = sigma;
+            this.phi = phi;
+            this.cap = cap;
+        }
+
+        /** 走一步（按本类的 σ）；传参会临时换一个 σ（起跑头几秒要大一点） */
+        void step() { step(sigma); }
+
+        void step(double s) {
+            double k = Math.sqrt(Math.max(0.01, 1 - phi * phi));
+            n = clamp(phi * n + r.nextGaussian() * s * k, -cap, cap);
+            e = clamp(phi * e + r.nextGaussian() * s * k, -cap, cap);
+        }
+    }
+
+    /** 米 → 纬度度数的换算（校园尺度够用，别引入投影库） */
+    static double mToLat(double m) { return m / 111320.0; }
+
+    /** 米 → 经度度数（按当地纬度收缩） */
+    static double mToLon(double m, double latDeg) {
+        return m / (111320.0 * Math.cos(Math.toRadians(latDeg)));
+    }
+
+    /**
+     * 轨迹里**相邻两点的最大间距**（米）—— 对应服务端那条
+     * {@code android_gps_max_distance = 30}。噪声加完之后必须还在这条线之内，
+     * 所以每次跑完都量一遍并打在日志里（不是"希望它没问题"，是"量给你看"）。
+     */
+    static double maxGapM(List<double[]> samples) {
+        if (samples == null || samples.size() < 2) return 0;
+        double worst = 0;
+        for (int i = 1; i < samples.size(); i++)
+            worst = Math.max(worst, dist(samples.get(i - 1), samples.get(i)));
+        return worst;
     }
 
     /**
@@ -1438,16 +1667,39 @@ public class Ledao {
          *   上下夹 1.00~1.55 —— 两端都贴着真机值，不会外推出人腿做不到的步长。 */
         double sec = Math.max(1.0, usedSec);
         double v = distanceM / sec;
-        double stride;
-        if (v <= 0.49) stride = 1.00;
-        else if (v < 1.2) stride = 1.00 + (1.35 - 1.00) * (v - 0.49) / (1.2 - 0.49);
-        else stride = 7.7982 - 1.9399 * v;
-        stride = clamp(stride, 1.00, 1.55);
+        /* ── ① 总步数：速度 → m/步，**锚点内插**（v1.0.39 / #8） ──────────────
+         * 真机三条实测（`work/ae.log` 三组 + 服务端收下那次）：
+         *     0.49 m/s → 1.01     3.24 m/s → 1.52     3.34 m/s → 1.32
+         * 后两条差 **17%** —— 这正是用户点出来的那个数（docs/71 §二.6）。
+         * 旧代码把这两点**连成一条直线**（stride = 7.7982 − 1.9399·v），
+         * 可两点一升一降，解出来的斜率是负的：速度越快步幅越小。
+         * 那是把"两个人/两天/两条不同长短的跑步"的差异，当成了"速度的函数"，
+         * 结果**任何一条真机记录都只能碰巧对上**（换双鞋就两头都错）。
+         *
+         * 所以改成两件事分开：
+         *   ① 形状用**单调**锚点内插：走 0.49→1.01、慢跑 1.2→1.20、跑 3.34→1.32。
+         *      中锚点 1.2 m/s 是"走↔跑"的拐点（步幅从 1.0 快速抬到 1.2 再缓升），
+         *      端点全部贴着实测值，曲线单调 —— 这是常识，也是三条实测的共同方向。
+         *   ② 那 17% 的差异交给**每场一个系数** {@link #strideScale}（0.92~1.08）：
+         *      真人换个人、换一天，步长本来就差这么多。
+         *
+         * ⚠ 居中取的是**服务端收下并计分**的那一单（2.06 km / 616 s / 1556 步 = 1.32），
+         *   因为它是唯一有"服务端认可"背书的样本。另一单的 1.52 落在我们带子的上沿之外，
+         *   见 StepTest 与 docs/82 的说明 —— 那一条我们**不硬凑**，也不假装对上了。
+         * 上下夹 1.00~1.55：两端贴着真机值，不外推出人腿做不到的步长。 */
+        double base;
+        if (v <= 0.49) base = 1.01;
+        else if (v < 1.2) base = 1.01 + (1.20 - 1.01) * (v - 0.49) / (1.2 - 0.49);
+        else if (v < 3.34) base = 1.20 + (1.32 - 1.20) * (v - 1.2) / (3.34 - 1.2);
+        else base = 1.32;
+        double stride = clamp(base * strideScale, 1.00, 1.55);
+        lastStride = stride;
         int total = Math.max(50, (int) Math.round(distanceM / stride));
 
         /* ── ② 首段残段：按「整分钟平均步频」反推那一截，直接嵌进总数 ─────── */
         int minutes = Math.max(1, (int) Math.ceil(sec / 60.0));
         double avgPerMin = total / sec * 60.0;
+        lastCadence = avgPerMin;            // ★ v1.0.39：陀螺仪/加速度流的摆动频率用它（#7）
         double frac = Math.max(0.10, Math.min(1.0, sec - 60.0 * (minutes - 1)) / 60.0);
         int first = (int) Math.round(avgPerMin * frac);
         /* 只有一段时，那一段**就是**总数 —— 不这么写的话下面的循环一次都不进，
@@ -1555,8 +1807,9 @@ public class Ledao {
          * 常驻通知还挂着、进程还活着，但一条指令都不执行 —— 用户看到的现象就是
          * 「切到别的 App，跑步就停了；只有屏幕停在助手上才跑」。
          *
-         * <p>冻住的这段时间**不算用时、也不进轨迹时间轴**（见 {@link Freeze}），
-         * 所以配速不会被拖坏。界面拿这个数决定要不要提醒用户去放开后台。
+         * <p>★★★ v1.0.39（#11）：冻住的这段**不再从用时里剔除**，而是「照常算用时、
+         * 把路程补回来」（见 {@link Freeze#catchUpM}）—— 时间轴与服务端能看到的
+         * 到达时刻必须自洽，不能靠改小 used_time 过关。界面拿这个数决定要不要提醒用户。
          */
         public int frozenSec = 0;
     }
@@ -1582,6 +1835,47 @@ public class Ledao {
         resetNetLog();               // ★ 清空报文记录，保证 netlog.txt 只装本场
         Result res = new Result();
         try {
+            /* ★★★ v1.0.39（#14 轨迹重合 / #8 步长 / #15 同模板）：**本场三个随机量先抽出来**。
+             *
+             * ① 整体平移 3~5 m、随机方位 —— 两个账号跑同一条路网，首点坐标不再逐位相同；
+             * ② 步长系数 0.87~1.03 —— 让 m/步 落在真机实测的 1.32~1.52 这条带里（见 perStep）；
+             * ③ 定位误差模型（{@link GpsNoise}）—— 逐点相关误差，起跑头几秒更大。
+             *
+             * 这三个数都写进日志，跑完能一眼看出"这场和其它场不一样在哪"。 */
+            double refLat = lat0 != 0 ? lat0 : 36.658704;
+            double ang0 = rnd.nextDouble() * Math.PI * 2;
+            double rad0 = 3.0 + rnd.nextDouble() * 2.0;                 // 3~5 m
+            offLatDeg = mToLat(rad0 * Math.cos(ang0));
+            offLonDeg = mToLon(rad0 * Math.sin(ang0), refLat);
+            strideScale = 0.92 + rnd.nextDouble() * 0.16;               // 0.92~1.08
+            final GpsNoise gps = new GpsNoise(rnd, 4.5, 0.80, 9.0);
+            AppLog.bind(ident.get("uid"), "");
+            AppLog.clear();
+            AppLog.add("开始跑步：目标 " + targetKm + " km，配速 "
+                    + String.format(Locale.US, "%.1f~%.1f 分/公里", 1000 / speed2 / 60, 1000 / speed / 60));
+            log.log(String.format(Locale.US,
+                    "      本场随机量：整体平移 %.1f m（方位 %.0f°）、步长系数 %.3f、"
+                  + "定位误差 σ=4.5 m（起跑头 15 秒 8 m，AR(1) φ=0.80）",
+                    rad0, Math.toDegrees(ang0), strideScale));
+            /* ★★★ v1.0.39（#16 时段规律，docs/71 §三.8）：**先看清这一场落在哪个时段**。
+             *
+             * 服务端规则里有两个时间窗（docs/05 §〇·补）：
+             *   run_start_time / run_end_time = 18000 / 82800（05:00–23:00，App 层）
+             *   time_rule_arr[].start / end   = 21600 / 79200（**06:00–22:00，计分窗**）
+             * 出了计分窗跑也白跑。这件事代码管不了"你几点跑"，但必须**当场说清楚** ——
+             * 以前它只在首页右上角小字里，开始跑步时不提。
+             *
+             * ⚠ 另一半是行为层的：别每天同一分钟开跑、别几台机器一起收尾。
+             *   那一条代码无法替你做到，docs/71 §七 的 Do 第 4 条写明了。 */
+            java.util.Calendar cal0 = java.util.Calendar.getInstance();
+            int hour0 = cal0.get(java.util.Calendar.HOUR_OF_DAY);
+            boolean inScoreWindow = hour0 >= 6 && hour0 < 22;
+            if (!inScoreWindow)
+                log.log("      ⚠ 现在是 " + hour0 + " 点，**不在计分窗口 06:00–22:00 之内** ——"
+                        + "这一场大概率不计分（规则如此，不是轨迹/打卡的问题）");
+            else
+                log.log("      时段：" + hour0 + " 点，在计分窗口 06:00–22:00 之内 ✅"
+                        + "（建议每天换一个时间跑，别总在同一分钟开跑）");
             // ---- 1) 服务器时间与位置签名串
             log.log("[1/6] 取服务器时间与位置签名串 …");
             JSONObject ts = call("Run/getTimestampV278", null, 0);
@@ -1631,6 +1925,8 @@ public class Ledao {
                 log.log("      !! " + res.message);
                 return res;
             }
+            // ★ v1.0.39（#10）：应用日志的每一行都带学校名（真机格式），这里拿到就跑区名
+            AppLog.bind(ident.get("uid"), zoneName);
             java.util.TreeMap<String, String> q = new java.util.TreeMap<>();
             q.put("zone_id", zoneId);
             JSONObject zp = call("Run/GetZonePoints", q, 0);
@@ -1923,6 +2219,12 @@ public class Ledao {
                 }
             } catch (Throwable ignore) { }
             RouteGen.Path rp = null;
+            /* ★★★ v1.0.39（#16「时段/时长整齐」，docs/71 §三.8）：**本场目标里程 ±3% 抖动**。
+             *   以前同一档目标里程每场都是同一个数（2.00 / 3.00 km …），配速区间又固定，
+             *   于是每一场的**时长分布几乎一样**（群里几台机器一起跑，收尾时刻能差不到一分钟）。
+             *   真人不会这样：说跑 3 公里，实际 2.93~3.06 都正常。
+             *   抖动只作用于"没复用预览种子"的新路线；预览与实跑逐点相同这条不变。 */
+            double wantM = targetKm * 1000.0 * (0.97 + rnd.nextDouble() * 0.06);
             StringBuilder rnote = new StringBuilder();
             // ---- 首选：新版路线规划（手画路网上的随机游走，见 RoutePlan）
             //   ★ 打卡点要按 **point_id** 认，不能按序号 —— 序号是 GetZonePoints
@@ -1952,7 +2254,7 @@ public class Ledao {
                      *   所以：**同一对点就原封不动重跑一遍**（种子 + 自动目标都不动），
                      *   得到逐点相同的一条线，"点开始跑步就跑这一条"才真的成立。
                      *   服务端换了一对点时，才退而求其次用 planKm 把里程大致对齐。 */
-                    if (!samePair) o.targetM = targetKm * 1000.0;
+                    if (!samePair) o.targetM = wantM;
                     long t0 = System.currentTimeMillis();
                     RoutePlan.Result rr = RoutePlan.generate(routeNet, uA, uB, seed, o);
                     long ms = System.currentTimeMillis() - t0;
@@ -1979,7 +2281,7 @@ public class Ledao {
                 //   我们以前是 A→B 单程、首尾正好压在两个打卡点上，既不像人、也让
                 //   打卡点落在轨迹的 idx 0 和最后一点（真机的 `p` 从不在 idx 0）。
                 rp = RouteGen.buildLoop(roadGrid, all, keyA, keyB, simStart,
-                        targetKm * 1000, rnd, rnote);
+                        wantM, rnd, rnote);
                 if (rp != null) {
                     log.log("      路网闭环寻路成功：" + rnote);
                 } else {
@@ -1987,7 +2289,7 @@ public class Ledao {
                 }
             }
             if (rp == null || rp.length < 50) {
-                rp = RouteGen.build(cps, targetKm * 1000, water, rnd, randomRoute);
+                rp = RouteGen.build(cps, wantM, water, rnd, randomRoute);
                 rnote.setLength(0);
             }
             if (rp == null || rp.length < 50) {
@@ -2056,6 +2358,9 @@ public class Ledao {
              *   这里管的是**整段时间根本没被调度**（进程被冻住）。
              *   两个一起看就能分清"后台被限制了"还是"网络不好"。 */
             final Freeze fz = new Freeze();
+            /* ★ v1.0.39（#11）：被冻住的那段时间里"人其实还在跑"——补回来的米数记在这里 */
+            double frozenGapM = 0;
+            int frozenGaps = 0;
             // 预计总时长：用区间中值速度估，只用于「收尾减速段」的定位
             double totalTSec = rp.length / Math.max(0.5, vMid);
             int n = (int) (totalTSec / intervalSec) + 4;
@@ -2249,13 +2554,13 @@ public class Ledao {
 
             for (int i = 0; i < n && !stopped; i++) {
                 long tickStart = System.currentTimeMillis();
-                /* ★★★ v1.0.30（docs/62）：两个时钟，别混用。
-                 *   tickStart —— **真实墙上时钟**，只用来量"这一拍花了多久"（slowTicks）；
-                 *   vTick     —— **虚拟时钟**，写进轨迹时间轴的那个时刻：等于
-                 *                真实时刻 − 系统到目前冻掉的时间。
-                 *   冻住的时段在虚拟时间轴上是"不存在"的 —— 这样轨迹读出来是连续的，
-                 *   不会平白多出一段几十秒的断档，配速也不会被拖慢。 */
-                long vTick = fz.virtualAt(tickStart);
+                /* ★★★ v1.0.30 建了两个时钟；v1.0.39（#11）把它们统一成一个口径：
+                 *   tickStart —— **真实墙上时钟**，只用来量"这一拍花了多久"（slowTicks / 冻结判定）；
+                 *   vTick     —— **这一场自己的计时**（t0 + 已跑秒数）。
+                 *   以前 vTick 是"墙钟 − 冻掉的秒数"（时间旅行）；现在冻掉的秒数**照样
+                 *   进已跑秒数**，于是 vTick 单调、和 used_time 同一个口径 —— 有冻结时
+                 *   轨迹上表现为"这一段时间里一个采样点都没有"，而不是"时间轴被压缩"。 */
+                long vTick = t0 * 1000L + Math.round(elapsedSec * 1000.0);
                 long pausedMs = 0;      // 本拍里"我们自己计划好的停顿"（刷脸那 13~30 秒）
                 // ★★★ 界面优化 #6（2026-10-07）：速度改成**连续可导**的随机曲线。
                 //
@@ -2372,15 +2677,21 @@ public class Ledao {
                         /* ★ v1.0.30：打卡时刻也走**虚拟时钟** —— 它要和轨迹上的
                          *   时间轴同一口径（不然冻过一次之后，打卡时间会落在
                          *   轨迹末端之外，读起来自相矛盾）。 */
-                        kp.timestamp = fz.virtualAt(System.currentTimeMillis()) / 1000;
+                        /* ★ v1.0.30 打卡时刻走虚拟时钟；v1.0.39（#11）改成走**本场计时**
+                         *   （t0 + 已跑秒数）—— 与 used_time / 轨迹时间轴同一个口径。 */
+                        kp.timestamp = t0 + Math.round(elapsedSec);
                         /* ★ 报给服务端的是**有效里程**那一刻的值 —— 官方客户端
                          *   logPoints 里的 distance 也是它自己累计的里程
                          *   （docs/22 §2.3）。路线进度 mm 与有效里程之间差着
                          *   已经发生过的无效段，这里换算回去。 */
                         kp.hitKm = Math.max(0, validM - (totalM - mm)) / 1000.0;
                         // ★ 记下「踩到那一刻的实时 GPS」—— 收尾时 logPoints 要报这个坐标
-                        kp.hitLat = qp[0];
-                        kp.hitLon = qp[1];
+                        //   ★ v1.0.39（#6/#14）：报的是**本机的 GPS 读数**，不是点位坐标 ——
+                        //   整体的 3~5 m 平移 + 这一拍的相关误差都要算进去。
+                        //   真机那次打卡报的坐标离点位 45.8 m（docs/21 §3.2），
+                        //   所以"坐标不等于点位"本来就是常态；恒等于点位才是破绽。
+                        kp.hitLat = qp[0] + offLatDeg + mToLat(gps.n);
+                        kp.hitLon = qp[1] + offLonDeg + mToLon(gps.e, qp[0]);
                         if (hit.length() > 0) hit.append(',');
                         hit.append(kp.id);
                     }
@@ -2413,10 +2724,17 @@ public class Ledao {
                      *   轨迹文件里只有经纬度 + b/c 分段，服务端就从这些数里读里程；
                      *   写有效里程，那段没跑的灰虚线才不会变成 b/c 里的一截。 */
                     double cumV = Math.max(0, validM - (totalM - mm));
-                    samples.add(new double[]{sp[0], sp[1], v, cumV,
+                    /* ★★★ v1.0.39（#6）：每一点都带**相关误差**，而且起跑头 15 秒更大
+                     *   （搜星/冷启动；这正是服务端 start_precision=30 那条阈值存在的理由）。
+                     *   误差按米算再换算成度，整条轨迹同时带着本场那 3~5 m 的整体平移。 */
+                    double sig = (elapsedSec < 15) ? 8.0 : (elapsedSec > totalTSec - 10 ? 6.0 : 4.5);
+                    gps.step(sig);
+                    double pLat = sp[0] + offLatDeg + mToLat(gps.n);
+                    double pLon = sp[1] + offLonDeg + mToLon(gps.e, sp[0]);
+                    samples.add(new double[]{pLat, pLon, v, cumV,
                             vTick / 1000.0 + runSec * frac});
                 }
-                shot.add(new MapShot.P(pos[0], pos[1], v));
+                shot.add(new MapShot.P(pos[0] + offLatDeg, pos[1] + offLonDeg, v));
 
                 // ★★★ 位置心跳 —— 对齐真机实测节拍：
                 //   docs/12 §1.4：真机 App 日志里那句「生成打卡json数据失败，runChecks为空」
@@ -2438,7 +2756,10 @@ public class Ledao {
                     cum.append(kp.id);
                 }
                 long nowSec = System.currentTimeMillis() / 1000;
-                if (hit.length() > 0 || nowSec - lastReport >= 20) {
+                /* ★ v1.0.39（#15 同模板）：心跳节拍从"恒定 20 秒"改成 18~22 秒抖动。
+                 *   真机的 20 秒是 setRunLocationRecord 的**建议**节拍，实测量到的
+                 *   相邻两次是 20/21/19 秒，不是秒表对表；恒定 20.00 秒反而像定时器。 */
+                if (hit.length() > 0 || nowSec - lastReport >= 18 + rnd.nextInt(5)) {
                     lastReport = nowSec;
                     TreeMap<String, String> ex = new TreeMap<>();
                     ex.put("game_id", zoneId);              // ★ 校园跑必须带真实跑区 id（-1 会不计次）
@@ -2632,9 +2953,55 @@ public class Ledao {
                  *   这就是用户报的「切到别的 App 跑步就停了」的机理：前台服务和
                  *   常驻通知都还在（看着像在跑），但一条指令都没执行、一行日志都没有，
                  *   所以切回来看到的是"中间那段日志是空的"。 */
-                String sleepLine = fz.add(
-                        System.currentTimeMillis() - sleepFrom - Math.max(0, wait));
+                long over = System.currentTimeMillis() - sleepFrom - Math.max(0, wait);
+                String sleepLine = fz.add(over);
                 if (sleepLine != null) log.log(sleepLine);
+                /* ★★★ v1.0.39（#11「冻结虚拟时钟」，docs/71 §三.1）：**不再时间旅行**。
+                 *
+                 * v1.0.30 那版的做法是把冻掉的秒数从"用时"里减掉（{@code Freeze.virtualAt}）：
+                 * 20 分钟的冻结会让这一场跑半小时，但上报的 used_time 还是 20 分钟。
+                 * 这在本地看起来"配速没被拖坏"，可它正是 docs/71 §三.1 点出来的那条：
+                 * **{@code used_time} / {@code end_time} 与请求到达时刻不再自洽** ——
+                 * 服务端在起跑时给过 start_time（它自己签的），收尾包到的那一刻墙上是几点，
+                 * 一减就知道真实过了多久。时间轴对不上，是没法解释的。
+                 *
+                 * 现在改成"人在跑、机器没记录"这个**真实**解释：
+                 *   · 冻住的这 over 秒**照常进用时**（elapsedSec += over，不再从钟上扣回去）；
+                 *   · 人在这 over 秒里当然还在跑 —— 按当前速度把**路线进度和有效里程**一起补上；
+                 *   · 但这段时间**一个采样点都没有**（进程没被调度，GPS 回调也没触发）——
+                 *     轨迹上留下一段直线缺口，和真机 GPS 断档是同一个形状（docs/57 里有实测）。
+                 * 于是：{@code distance}、{@code used_time}、{@code end_time} 三者自洽，
+                 * 轨迹上的缺口又与"中途被冻过"这件事如实对应 —— 没有一处需要编。
+                 *
+                 * ⚠ 诚实的边界：如果冻得太久（比如 20 分钟），这一段会真的把配速拖到
+                 * 480 s/km 之外，那一场就不该上传。这个判断在下面收尾前会明确提示，
+                 * 不再靠"把时间改小"来掩盖。 */
+                if (over >= Freeze.MIN_MS) {
+                    double gapSec = over / 1000.0;
+                    double vGap = v > 0.2 ? v : vMid;
+                    double room = Math.max(0.0, rp.length - totalM - 20.0);
+                    double gapM = Freeze.catchUpM(vGap, over, room);
+                    if (gapM > 0.5) {
+                        totalM += gapM;
+                        validM += gapM;
+                        elapsedSec += gapSec;
+                        frozenGapM += gapM;
+                        frozenGaps++;
+                        pos = rp.at(totalM);
+                        log.log(String.format(Locale.US,
+                                "      ★ 冻住这 %.1f 秒人还在跑 —— 按 %.2f m/s 补回 %.0f m"
+                              + "（用时**如实**计入，轨迹上这一段没有采样点：真机 GPS 断档同形状）",
+                                gapSec, vGap, gapM));
+                        if (totalM >= rp.length - 1.0) {
+                            lastTick = true;      // 冻着的这段时间已经跑到终点
+                        }
+                    } else {
+                        elapsedSec += gapSec;
+                        log.log(String.format(Locale.US,
+                                "      ★ 冻住 %.1f 秒：路线已经到末端，补不回里程；用时如实计入",
+                                gapSec));
+                    }
+                }
                 /* ★ v1.0.30：每 50 拍（≈5 分钟）把唤醒锁的兜底超时往后推一次。
                  *   被系统冻过的场次墙上时钟走得久得多（冻 20 分钟就多 20 分钟），
                  *   45 分钟的兜底有可能不够 —— 续一下，长跑不会半路掉锁。 */
@@ -2642,11 +3009,12 @@ public class Ledao {
                 if (lastTick) break;        // 末拍已经处理完（含终点打卡），收工
                 }                           // ← 对应上面那个 else（刷脸暂停时不做推进）
             }
-            /* ★★★ v1.0.30：收尾时刻也走**虚拟时钟**。
-             *   end_time / used_time / 传感器流（packSensor 拿 used 推 endMs）
-             *   三个口径必须自洽 —— 有一个带着"被冻住的那些秒"，服务端读出来
-             *   就是"用时多了一截、里程没动"，配速直接顶到 480 s/km 的上限之外。 */
-            long t1 = fz.virtualAt(System.currentTimeMillis()) / 1000;
+            /* ★★★ v1.0.39（#11）：收尾时刻**不再走虚拟时钟**。
+             *   三个口径照样自洽，只是自洽的方式换了：以前是"把冻掉的秒数从钟上减掉"，
+             *   现在是"把冻掉的那段路程补上"（见 tick 末尾那段）。
+             *   于是 end_time = start_time + used_time，而 used_time 就是这一场真实的用时 ——
+             *   服务端拿它自己签发的 start_time 与收包时刻一对，对得上。 */
+            long t1 = t0 + (long) Math.round(elapsedSec);
             long used = t1 - t0;
             res.frozenSec = fz.frozenSec();
             String fzSummary = fz.summary();
@@ -2664,6 +3032,27 @@ public class Ledao {
             }
             log.log(String.format(Locale.US, "      合计 %.3f km / %d 秒 / 配速 %d s/km",
                     distKm, used, (int) (used / Math.max(0.001, distKm))));
+            /* ★★★ v1.0.39（#11）：配速那道门 —— 以前靠"把时间减掉"过关，现在如实算、如实说。 */
+            int paceNow = (int) (used / Math.max(0.001, distKm));
+            if (frozenGaps > 0) {
+                log.log(String.format(Locale.US,
+                        "      ★ 本场被系统冻过 %d 次、共 %.1f 秒 —— 那几段人还在跑，已补回 %.0f m"
+                      + "（用时**如实**计入，没有从钟上扣回去）；轨迹上对应 %d 处"
+                      + "没有采样点的直线缺口",
+                        fz.times(), fz.ms() / 1000.0, frozenGapM, frozenGaps));
+            }
+            if (paceNow < 180 || paceNow > 480) {
+                log.log(String.format(Locale.US,
+                        "      ⚠ 配速 %d s/km 超出服务端窗口 180~480 —— 这一场多半不计分",
+                        paceNow));
+                log.log("         原因不是轨迹/打卡，而是**用时**："
+                      + (frozenGaps > 0
+                            ? "中途被系统冻了 " + fz.frozenSec() + " 秒（人还在跑，时间不能改小）"
+                            : "配速区间设得太极端")
+                      + "。下次把「🪟 迷你小窗」开上，别再让它冻。");
+            } else {
+                log.log("      ✅ 配速在服务端窗口 180~480 s/km 之内");
+            }
             if (invalidM > 0.5) {
                 log.log(String.format(Locale.US,
                         "      ★ 有效里程 %.3f km ／ 路线进度 %.3f km ——"
@@ -2737,11 +3126,26 @@ public class Ledao {
                     "      轨迹采样 %d 点 / %.0f m（点距中位 %.1f m），真机基线 336 点 / 2688 m / 7.67 m",
                     samples.size(), distKm * 1000.0,
                     samples.isEmpty() ? 0.0 : medianStep(samples)));
+            /* ★ v1.0.39（#6）：噪声加完之后**量一遍相邻点距** —— 服务端那条
+             *   android_gps_max_distance=30 是硬门槛。加了误差就必须还站得住，
+             *   所以这里不是"希望它没问题"，而是把实测值打出来给人核对。 */
+            {
+                double gapM = maxGapM(samples);
+                double offM = Math.hypot(offLatDeg * 111320.0,
+                        offLonDeg * 111320.0 * Math.cos(Math.toRadians(36.65)));
+                log.log(String.format(Locale.US,
+                        "      相邻点距最大 %.1f m（服务端 android_gps_max_distance=30）%s；"
+                      + "本场定位：整体平移 %.1f m + 逐点相关噪声（AR(1) σ=4.5 m，起跑头 15 秒 8 m）",
+                        gapM, gapM <= 30.0 ? " ✅ 在门槛内" : " ❌ 超了，需要调小噪声", offM));
+            }
 
             // ★★★ 轨迹序列化 —— 见 buildTrackJson() 上方的说明（对齐真机原件）
             //   ⚠ 第二个参数必须是 **validM**：b/c 分段是从它切出来的，Σb 就是上报里程。
             //     传 totalM 会把那段无效里程又算回去（这正是用户否掉的那件事）。
-            String trackJson = buildTrackJson(samples, validM, pos);
+            //   ★ v1.0.39：末点也要带上本场那 3~5 m 的整体平移，否则"最后一个点"会
+            //     突兀地落回路网原点，和前面几百个点不在同一个坐标系里。
+            double[] endLL = {pos[0] + offLatDeg, pos[1] + offLonDeg};
+            String trackJson = buildTrackJson(samples, validM, endLL);
             int marks = trackMarks(samples, validM);
             double firstT = samples.isEmpty() ? 0 : samples.get(0)[4];
             double lastT = samples.isEmpty() ? used : samples.get(samples.size() - 1)[4];
@@ -2811,8 +3215,22 @@ public class Ledao {
             // ② type=18 跑步截图（真实高德底图 + 彩色轨迹，和 App 的观感一致）
             String imgKey = "Public/Upload/pic/run_photo_screenshotImage/" + day + "/"
                     + (1 + rnd.nextInt(999)) + "/" + UUID.randomUUID() + ".png";
-            byte[] img = MapShot.render(shot, 540, 1059, log);
-            if (img == null) { log.log("      !! 底图没拉到，改用兜底图"); img = MapShot.fallback(540, 1059); }
+            /* ★★★ v1.0.39（#9 截图不像截屏）：现在生成的是**整屏**，而且把这一场的
+             *   真数字印上去（里程/用时/配速/打卡数/收尾时刻）。数字全部取自
+             *   下面 stopRunV278 要发的同一批变量 —— 截图和报文对不上比没有截图更可疑。 */
+            MapShot.Rec shotRec = new MapShot.Rec();
+            shotRec.km = distKm;
+            shotRec.usedSec = used;
+            shotRec.hits = signUpCount;
+            shotRec.total = keyPts.size();
+            shotRec.endSec = t1;
+            shotRec.cadence = lastCadence;
+            shotRec.stride = lastStride;
+            byte[] img = MapShot.render(shot, 540, 1059, shotRec, rnd, log);
+            if (img == null) {
+                log.log("      !! 底图没拉到，改用兜底图（整屏照画，只换底图）");
+                img = MapShot.fallback(540, 1059, shotRec, rnd);
+            }
             int icode = ossPutRetry(sts, imgKey, img, "image/png");
             log.log("      ② 截图   HTTP " + icode + "  " + imgKey);
             if (icode != 200) { res.message = "截图上传失败 HTTP " + icode; return res; }
@@ -2824,6 +3242,11 @@ public class Ledao {
             int scode = ossPutRetry(sts, senKey, sen, "application/octet-stream");
             log.log("      ③ 陀螺仪 HTTP " + scode + "  " + sen.length + " 字节  " + senKey);
             if (scode != 200) { res.message = "陀螺仪上传失败 HTTP " + scode; return res; }
+
+            /* ④ type=appLog —— ★ v1.0.39（#10）：真机每场都把客户端日志传上去
+             *   （OSS PUT + Report/appLog，见 {@link AppLog} 的类注释）。
+             *   非致命：传不上去只记一行，绝不拦着收尾。 */
+            uploadAppLog(sts, day);
 
             String stepInfo = perStep(used, validM);
             int stepNum = 0;
