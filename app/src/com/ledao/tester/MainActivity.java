@@ -3924,10 +3924,13 @@ public class MainActivity extends Activity implements Ledao.Log {
         final String clean = maskSensitive(s);          // ★ 三个去处的共同源头，先脱敏
         String line = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()) + "  " + clean;
         android.util.Log.i("LedaoTester", clean);
-        /* ★ v1.0.39（#10）：这一行同时进「应用日志」—— 真机整场都在写
-         *   files/log_report/android_error_<日期>.log，跑完用 Report/appLog 上报。
-         *   我们这儿的每一行界面日志就是它的内容（uid 在 AppLog 里打码）。 */
-        if (persist) AppLog.add(clean);
+        /* ★★★ v1.0.40：**界面日志绝不进「应用日志」**。
+         *   v1.0.39 在这里加过一道钩，把每一行界面日志都塞进那份要上传给服务端的
+         *   .log —— 而那些行里写着「本场随机量：整体平移 3.7 m」「步长系数 0.973」
+         *   「路网随机游走 种子…」。等于把"轨迹是合成的"打包上传。
+         *   现在上传的那份改由 Ledao 只写**中性行**（见 AppLog 类注释），
+         *   界面日志只留在本地：logcat 与 files/run.log。
+         *   ⚠ 这个文件里连"AppLog"这三个字都不该再跟一次 add。 */
         if (persist && RUN_ACTIVE) RunLog.append(line);
         // ★ 打到「当前活着的 Activity」上。Activity 可能被重建，
         //   旧跑步线程如果往已销毁的实例上打日志，用户就"看不见"了。

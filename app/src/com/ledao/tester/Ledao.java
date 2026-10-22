@@ -1470,7 +1470,16 @@ public class Ledao {
         /* 起始姿态照抄真机样本（gx=-2.07 / gy=-0.08 / gz=9.36），之后平滑跟随 */
         double gx = -2.07, gy = -0.09, gz = 9.36;
         int i = 0;
-        while (tMs < endMs) {
+        while (true) {
+            /* ★ v1.0.40：**最后一个样本必须正好落在 endMs / 轨迹末点**。
+             *
+             *   以前是 `while (tMs < endMs)` 自然跑完 —— 而每 97 个样本插一次的
+             *   800~4000 ms 真空档（照抄真机的偶发断档）只要正好出现在收尾，
+             *   最后一个样本就会停在末点前 3~4 秒、也就是**一整个街段（~10 m）之外**：
+             *   传感器流报的位置和轨迹末点对不上。真机不是这样 —— 人停在哪儿，
+             *   最后一个采样就在哪儿。SensorTest G2b 抖红过两次，根子在这里。 */
+            boolean last = tMs >= endMs;
+            if (last) tMs = endMs;
             double tt = (tMs - t0ms) / 1000.0;
             int k = (int) Math.min(n - 1, Math.round(tt / segSec));
             JSONObject tp = traj.getJSONObject(k);
@@ -1507,6 +1516,7 @@ public class Ledao {
             o.put("gz", String.format(Locale.US, "%.2f", gz));
             out.put(o);
             i++;
+            if (last) break;                                          // 收尾样本已经落在 endMs
             tMs += gaps[rnd.nextInt(gaps.length)];
             if (i % 97 == 0) tMs += 800 + rnd.nextInt(3200);           // 真机也有偶发空档
         }
@@ -1841,7 +1851,9 @@ public class Ledao {
              * ② 步长系数 0.87~1.03 —— 让 m/步 落在真机实测的 1.32~1.52 这条带里（见 perStep）；
              * ③ 定位误差模型（{@link GpsNoise}）—— 逐点相关误差，起跑头几秒更大。
              *
-             * 这三个数都写进日志，跑完能一眼看出"这场和其它场不一样在哪"。 */
+             * 这三个数写进**界面日志**（不上传，只在本机 `日志` 页看），跑完能一眼
+             * 看出"这场和其它场不一样在哪"。⚠ 它们**不能**进 {@code Report/appLog}
+             * 那份文件 —— v1.0.40 把那条链路收紧成只许中性行，理由见 {@link AppLog}。 */
             double refLat = lat0 != 0 ? lat0 : 36.658704;
             double ang0 = rnd.nextDouble() * Math.PI * 2;
             double rad0 = 3.0 + rnd.nextDouble() * 2.0;                 // 3~5 m
@@ -1851,8 +1863,16 @@ public class Ledao {
             final GpsNoise gps = new GpsNoise(rnd, 4.5, 0.80, 9.0);
             AppLog.bind(ident.get("uid"), "");
             AppLog.clear();
-            AppLog.add("开始跑步：目标 " + targetKm + " km，配速 "
-                    + String.format(Locale.US, "%.1f~%.1f 分/公里", 1000 / speed2 / 60, 1000 / speed / 60));
+            /* ★★★ v1.0.40：这份日志**只写中性行**（见 {@link AppLog} 类注释）。
+             *
+             *   真机那一场（work/session/auto_20261006_212849.jsonl 里 appLog 的 body）
+             *   整份只有两行：开场一句「是否有更新：false」，收尾前一句「screenOn:true」。
+             *   也就是说官方客户端这份日志**很稀**，它记的是"客户端活着、检查过更新、
+             *   屏幕亮过"，不记算法。以前我们把界面提示成句地写进去
+             *   （「目标 3.0 km，配速 6.0~6.4 分/公里」），等于主动告诉对方这一场是造的。
+             *   现在照真机的密度：开场一行、收尾一行，别的什么都不写。
+             *   （开场那行写在 [2/6] 拿到跑区名之后 —— 真机每行都带学校名，
+             *     太早写就会留下一个空字段，那也是新的破绽。） */
             log.log(String.format(Locale.US,
                     "      本场随机量：整体平移 %.1f m（方位 %.0f°）、步长系数 %.3f、"
                   + "定位误差 σ=4.5 m（起跑头 15 秒 8 m，AR(1) φ=0.80）",
@@ -1927,6 +1947,10 @@ public class Ledao {
             }
             // ★ v1.0.39（#10）：应用日志的每一行都带学校名（真机格式），这里拿到就跑区名
             AppLog.bind(ident.get("uid"), zoneName);
+            // ★ v1.0.40：开场那一行中性日志。位置有讲究 —— 必须在 bind 之后，
+            //   否则 school 字段是空的（真机两行都带「河北工程大学」）。
+            //   内容照抄真机：只说明"客户端活着、查过更新"，不写目标和配速。
+            AppLog.add("是否有更新：false");
             java.util.TreeMap<String, String> q = new java.util.TreeMap<>();
             q.put("zone_id", zoneId);
             JSONObject zp = call("Run/GetZonePoints", q, 0);
@@ -3245,7 +3269,13 @@ public class Ledao {
 
             /* ④ type=appLog —— ★ v1.0.39（#10）：真机每场都把客户端日志传上去
              *   （OSS PUT + Report/appLog，见 {@link AppLog} 的类注释）。
-             *   非致命：传不上去只记一行，绝不拦着收尾。 */
+             *   非致命：传不上去只记一行，绝不拦着收尾。
+             *
+             *   ★ v1.0.40：传之前补上真机的收尾那一行「screenOn:true」——
+             *     实测那一场 21:28:07 有这一行、21:28:49 才 PUT，也就是"跑完拿起来
+             *     看一眼、屏幕亮过"这个动作。这条**不是为了让我们多一行内容**，
+             *     是为了让这份文件的两行刚好对上真机那两行；多写一句都是新指纹。 */
+            AppLog.add("screenOn:true");
             uploadAppLog(sts, day);
 
             String stepInfo = perStep(used, validM);
