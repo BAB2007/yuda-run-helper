@@ -70,9 +70,13 @@ public final class SpeedModel {
      * 之后速度是从接近 0 慢慢爬回巡航的。
      *
      * <p>我们的助手以前是"瞬时"完成核验（发一个 HTTP 就过去了），轨迹上看不出任何痕迹。
-     * 现在 {@code Ledao.run()} 会在核验那一刻冻结位置并停顿 9~20 秒，
-     * 然后把 {@code resumeT} 告诉速度模型 —— 从那一刻起按
-     * {@link #resumeRamp} 秒的半余弦斜坡从 {@link #resumeFrom} 附近爬到巡航速度。
+     * 2026-10-10 那版是"冻结位置 + 停顿 9~20 秒"，然后把 {@code resumeT} 告诉速度模型，
+     * 从那一刻起按 {@link #resumeRamp} 秒的半余弦斜坡从 {@link #resumeFrom} 附近爬到巡航。
+     *
+     * <p>★ v1.0.41（用户第 2 条，第二轮更正）：刷脸改成「照片晚传 2~20 m」——
+     * 人**根本没停**、速度一直是正常配速，只是那 2~20 m 不计入有效里程。
+     * 所以本场 {@code resumeT} 一直是 -1（{@code Ledao} 不再调 {@link #withResume}）。
+     * 这套斜坡留着给"人真的停过"的场合，{@code SpeedFaceTest} 的 S6~S8 还在测它。
      *
      * <p>{@code resumeT < 0} = 本场没有中途核验，行为与以前完全一致。
      *

@@ -2279,6 +2279,12 @@ public class Ledao {
                      *   得到逐点相同的一条线，"点开始跑步就跑这一条"才真的成立。
                      *   服务端换了一对点时，才退而求其次用 planKm 把里程大致对齐。 */
                     if (!samePair) o.targetM = wantM;
+                    /* ★★★ v1.0.41（用户第 1 条）：打卡点要避开起点 / 终点 / 人脸核验点。
+                     *   人脸核验点落在路线 faceMiddleDistance 米处（服务端下发的是 600），
+                     *   所以只有「这一对不是预览那一对」时才把真实值塞进去 —— 是预览那一对
+                     *   时必须一个参数都不动，否则同一对点同一种子也会生成另一条线，
+                     *   「点开始跑步就跑这一条」就成了假话（PlanCheck ③b 专门盯着这条）。 */
+                    if (!samePair) o.faceM = faceMiddleStatus ? faceMiddleDistance : 0;
                     long t0 = System.currentTimeMillis();
                     RoutePlan.Result rr = RoutePlan.generate(routeNet, uA, uB, seed, o);
                     long ms = System.currentTimeMillis() - t0;
@@ -2292,6 +2298,21 @@ public class Ledao {
                         log.log(String.format(Locale.US,
                                 "        打卡点 %s→%s = 路网序号 #%d/#%d（%s）",
                                 pidA, pidB, uA, uB, samePair ? "与预览同一对 → 同一条线" : "服务端换了一对"));
+                        /* ★ v1.0.41：把三道避让量给用户看一眼 —— 打卡点挤在起点/终点/
+                         *   人脸点旁边，正是会被一眼看穿的那种轨迹。 */
+                        if (rr.punchM.length >= 2) {
+                            double p1 = Math.min(rr.punchM[0], rr.punchM[1]);
+                            double p2 = Math.max(rr.punchM[0], rr.punchM[1]);
+                            String faceStr = o.faceM > 0
+                                    ? String.format(Locale.US, "、离人脸点(%.0f m 处)最近 %.0f m",
+                                            o.faceM, Math.min(Math.abs(p1 - o.faceM),
+                                                              Math.abs(p2 - o.faceM)))
+                                    : "";
+                            log.log(String.format(Locale.US,
+                                    "        ★ 打卡点避让：起点后 %.0f m、终点前 %.0f m%s%s",
+                                    p1, rr.lengthM - p2, faceStr,
+                                    rr.softwhy.length() > 0 ? "　⚠ " + rr.softwhy : ""));
+                        }
                     } else {
                         log.log("      ⚠ 新版路线规划失败（" + rr.why + "），回落到旧版");
                     }
@@ -2348,32 +2369,29 @@ public class Ledao {
             double paceLoMin = 1000.0 / vMax / 60.0;      // 快的一头（分/公里）
             double paceHiMin = 1000.0 / vMin / 60.0;      // 慢的一头
             double vMid = (vMin + vMax) / 2.0;
-            /* ★ 不是 final：中途刷脸结束后要用 withResume() 挂一段复苏斜坡上去 */
+            /* 不是 final 只是习惯 —— v1.0.41 起刷脸全程不减速，不再往它身上挂复苏斜坡
+             * （那一套只在"人真的停过"的场合才有意义，现在 Ledao 里没人调它）。 */
             SpeedModel speedModel = SpeedModel.forPace(paceLoMin, paceHiMin, rnd);
             double lastV = Double.NaN;
-            /* ---- 中途刷脸暂停的状态（详见下面触发处那段注释）---- */
-            boolean faceEmitFrozen = false;   // 本拍要不要在暂停起点插一个 speed=0 的采样
-            double facePauseM = 0;            // 暂停起点在路线上的里程
-            double faceFrozenAt = -1;         // 已经插过冻结采样的里程（防止重复插）
-            double facePauseUntil = -1;       // 暂停结束的"已跑时长"（秒）；<0 = 没有暂停
-            double facePauseLeft = 0;         // 暂停还剩多少秒
-            double faceMissedM = 0;           // 暂停期间"本该跑掉"的里程（解冻时用来决定路线跳多远）
-            /* ★★★ 2026-10-10（用户第 4 条）：「无效的路段就是无效，不要再补回去了」。
+            /* ---- 中途刷脸「无效里程」那一段的状态（v1.0.41，详见下面触发处那段注释）----
+             * 跑到 600 m 先**不刷脸**，接着按正常配速往前跑 2~20 m（这一段算无效里程：
+             * 只推进路线进度、**不推进有效里程**），跑完才把照片传上去，然后照常跑。 */
+            boolean faceInvalid = false;       // 正在跑「刷脸前那段无效里程」
+            double faceInvalidUntilM = 0;      // 路线进度到这里就把照片传上去
+            double faceInvalidM = 0;           // 本场已经跑出来的无效里程（米）
+            /* ★★★ totalM ／ validM 两个计数器 —— v1.0.41 的口径：
              *
-             *   totalM —— **路线进度**：虚拟人此刻站在路线上的哪一点。解冻时会往前跳一段，
-             *             跳出来的那截直线就是地图上那条灰虚线。
-             *   validM —— **有效里程**：真正算数的米数。解冻时**一点都不动**。
+             *   totalM —— **路线进度**：虚拟人此刻站在路线上的哪一点。
+             *   validM —— **有效里程**：真正算数的米数，也就是上报的那个 distance。
              *
-             *   两者之差 = 这一场的无效里程。⚠ 上报给服务端的 `distance`、轨迹里的
-             *   b/c 分段、打卡点那条 distance，**全部用 validM** —— 不能用 totalM，
-             *   否则等于把那段没跑的路又补回去算了里程，正是用户否掉的那件事。
+             *   它们在哪里分开：**刷脸前那 2~20 m**（照片还没传，那一段只推进路线进度、
+             *   不推进有效里程 —— 这就是用户要的"无效里程"），以及"系统把进程冻住"
+             *   那段（人还在跑，两边一起补）。上一版那种"解冻时路线往前跳 55~320 m、
+             *   里程不动"已经删掉：无效里程还在，但那一截现在是**正常跑出来的路**，
+             *   轨迹上没有直线缺口。
              *
-             *   依据（不是我拍的）：真机上传的轨迹是「几何长度 2688 m，可上报 distance
-             *   只有 2.5271 km」—— `work/tracks_plain/2026-09-29_17-42` 实测差 161.2 m
-             *   （`work/gap_probe.py`）。也就是说官方客户端自己就没把那几段没记录到的路
-             *   算进里程。我们照抄这个口径：**几何长度 > 上报里程**才是真机的样子。
-             *   ★ v1.0.26 把那 161.2 m 拆开对上了：73.9 + 65.9 + 21.1 = 160.9 m，
-             *     前三段就是官方扣掉的那三处断档（`work/gap_probe2.py`）。 */
+             *   ⚠ 上报给服务端的 `distance`、轨迹里的 b/c 分段、打卡点那条 distance，
+             *     仍然**全部用 validM**。 */
             double validM = 0;                // 有效里程（m）—— 唯一会被上报的那个数
             double elapsedSec = 0;                        // 已跑时长（速度按时间推进）
             int slowTicks = 0;                // ★ v1.0.25：这一场"被拖长"的拍数（后台被限制的信号）
@@ -2394,31 +2412,16 @@ public class Ledao {
                     vMin, vMax, paceHiMin, paceLoMin, speedModel.accelCap(), totalTSec / 60.0));
             List<String> doneIds = new ArrayList<>();
             long lastReport = 0;                          // ★ 上次位置心跳的时间（秒）
-            /* ★★★ 2026-10-10：**先把这笔账说清楚**（用户第 4 条）。
-             *   中途刷脸会在轨迹上留一段灰虚线，那段**不算有效里程** ——
-             *   所以这一场真正能上报的里程 = 路线长度 − 那段无效里程，
-             *   而服务端的门槛是 2.00 km。开工前先把预计值打出来，
-             *   贴线了就当场提醒调高目标里程，别等跑完二十分钟才发现差几十米。 */
+            /* ★★★ v1.0.41（用户第 2 条）：无效里程回来了，但**不再是那条直线**。
+             *   跑到 middle_distance 先不刷脸，按正常配速再跑 2~20 m（只推进路线进度、
+             *   不推进有效里程），跑完才传照片 —— 于是 distance 比路线几何短 2~20 m，
+             *   而轨迹本身是一整条正常路线（没有断档、没有跳点）。
+             *   2.00 km 那道门几乎不受影响（最多少 20 m），不用预扣。 */
             if (faceMiddleStatus) {
-                /* ★★★ v1.0.26：缺口**大小是有门槛的**。
-                 *   真机 09-29 17:42 那份轨迹（用户截图那张 2.53 km）里：
-                 *     · 34.8 m / 33.5 m 的断档 → 官方**不画**灰虚线、里程也不扣
-                 *     · 60.6 / 65.9 / 73.9 m 的断档 → 画灰虚线，并且**从里程里扣掉**
-                 *   （还原过程见 work/gap_probe2.py + docs/57 §十一）
-                 *   ⇒ v1.0.23~25 那个 26 m 下限，在乐跑里根本看不出来 ——
-                 *     用户 2026-10-10 15:03 那一跑就是这么被问住的。
-                 *   现在按"停顿 17~30 秒"折算，缺口落在 60~130 m，与真机同档。 */
-                double estJump = Math.max(70.0, Math.min(320.0, 23.0 * vMid));
-                estJump = Math.min(estJump, rp.length);
                 log.log(String.format(Locale.US,
-                        "      ★ 中途刷脸会留一段无效里程（真机实测 33.5~283.7 m；"
-                                + "官方的灰虚线只在缺口 ≥ 60 m 时才画出来）——"
-                                + "它不计入有效里程。本场预计：路线 %.0f m − 无效 ~%.0f m"
-                                + " ≈ 有效 %.0f m（服务端下限 2000 m）",
-                        rp.length, estJump, Math.max(0, rp.length - estJump)));
-                if (rp.length - estJump < 2050)
-                    log.log("      ⚠ 有效里程离 2000 m 的下限太近 ——"
-                            + "建议把目标里程调高 0.1~0.2 km 再跑，否则可能被判「里程不足」。");
+                        "      ★ 中途刷脸在 %d m 处：到点先不传照片，按正常配速再跑 2~20 m"
+                                + "（这段算无效里程），跑完才传 —— 本场有效里程 = 路线 %.0f m − 2~20 m",
+                        faceMiddleDistance, rp.length));
             }
             List<MapShot.P> shot = new ArrayList<>();     // 画截图用
             // ★★★ GPS 采样缓冲：{lat, lon, 速度(m/s), 累计米, 绝对秒}。
@@ -2585,7 +2588,7 @@ public class Ledao {
                  *   进已跑秒数**，于是 vTick 单调、和 used_time 同一个口径 —— 有冻结时
                  *   轨迹上表现为"这一段时间里一个采样点都没有"，而不是"时间轴被压缩"。 */
                 long vTick = t0 * 1000L + Math.round(elapsedSec * 1000.0);
-                long pausedMs = 0;      // 本拍里"我们自己计划好的停顿"（刷脸那 13~30 秒）
+                long pausedMs = 0;      // 本拍里"我们自己计划好的停顿" —— v1.0.41 起恒为 0（刷脸不再罚站），留着是为了 slowTicks 那条口径不用改
                 // ★★★ 界面优化 #6（2026-10-07）：速度改成**连续可导**的随机曲线。
                 //
                 //   旧代码：double v = vMin + rnd.nextDouble() * (vMax - vMin);
@@ -2601,75 +2604,37 @@ public class Ledao {
                 //
                 //   时间方向：按「已跑时长」推进速度（不是按里程），
                 //   这样总时长可控、收尾减速能对上。
-                /* ★★★ 中途刷脸暂停中：速度 0、位置不动、里程不涨。
-                 * 真机就是这样 —— 人站在那儿举着手机等识别，GPS 不会往前跑。
-                 * 缺口长度 = 解冻后第一截斜坡积分出来的那几十米，与真机同量级。
+                /* ★★★ v1.0.41（用户第 2 条，第二轮更正）：**照常跑**，不减速、不暂停。
                  *
-                 * 注意变量作用域：v / stepM / lastTick 在这里先声明。
-                 * ⚠ 打卡判定 / 轨迹采样 / 位置心跳那一段是走 `else` 分支的 ——
-                 *   暂停期间**一个点都不发、一次心跳都不报**（真机断档也是这个效果：
-                 *   服务端那边就是"上一点 → 几十秒后的下一个点"）。 */
+                 * 用户的原话：「到人脸打卡的时候不进行打卡，之后进行常规跑步，
+                 * 这样就可以存在无效里程了，无效里程过后再上传人脸，就可以接着正常跑步了」。
+                 *
+                 * 所以速度一律走速度模型（和普通拍没有任何区别）；唯一的不同是**口算**：
+                 * 无效里程那一段只推进 totalM，validM 一动不动 —— 于是
+                 * "有效里程 = 路线长度 − 那 2~20 m"，而轨迹本身是一条正常路线。
+                 * 上一版那条直线（位置冻结 + 解开时跳 55~320 m）是用户否掉的东西，
+                 * 但"无效里程"这个现象本身用户要留着。
+                 *
+                 * 注意变量作用域：v / stepM / runSec / lastTick 都在这里声明，
+                 * 下面的打卡判定 / 轨迹采样 / 心跳 / 速度统计共用同一段。 */
                 double v = 0;
                 double stepM = 0;
+                double runSec = intervalSec;      // ★ 无效里程跑完的那一拍会短于 6 秒
                 boolean lastTick = false;
-                if (facePauseLeft > 0) {
-                    double pSec = Math.min(intervalSec, facePauseLeft);
-                    facePauseLeft -= pSec;
-                    elapsedSec += pSec;
-                    /* 暂停期间"本该跑掉"的里程：解冻时用它决定路线往前跳多远。
-                     *
-                     * ★ 这就是真机轨迹里那条直线缺口的来源 —— 真机刷脸那几十秒
-                     *   GPS 位置不动，解冻后第一次定位直接跳到"此时该在的地方"，
-                     *   于是两点之间拉出一条几十到几百米的直线。
-                     *   实测（work/gap_probe2.py 把三份真机轨迹逐段还原）：
-                     *     09-27 18-49 → 262.7 / 171.4 / 162.7 / 71.3 m
-                     *     09-29 17-42 → 73.9 + 65.9（连着的两个，合起来 139.8 m）
-                     *     09-29 19-39 → 283.7 / 68.1 / 60.6 m
-                     *   ⚠ 但跳过去的这几十米**只改路线进度，不改有效里程** ——
-                     *     见 validM 那段注释：无效的路段就是无效。 */
-                    faceMissedM += speedModel.peekTemp(elapsedSec, totalTSec) * pSec;
-                    /* 暂停起点插一个 speed=0 的采样：让轨迹在"冻结点"有个端点，
-                     * 于是缺口读出来就是一条直线（真机也是这么看的）。 */
-                    if (faceEmitFrozen && faceFrozenAt < 0) {
-                        faceFrozenAt = totalM;
-                        samples.add(new double[]{pos[0], pos[1], 0.0, validM,
-                                vTick / 1000.0});
-                        faceEmitFrozen = false;
-                    }
-                    if (facePauseLeft <= 1e-9) {
-                        /* 解冻：① **只把路线进度推前**（画出那条灰虚线缺口），
-                         *         有效里程不动 —— 这段路没跑，就不算里程；
-                         *       ② 挂上复苏斜坡，从接近 0 爬回巡航。
-                         * ★ v1.0.26：下限 26 → **55 m**。官方画灰虚线的门槛实测在
-                         *   35~60 m 之间（34.8 m 不画、60.6 m 就画），26 m 那档白扣
-                         *   里程还看不出缺口 —— 用户 15:03 那一跑就是这么被问住的。 */
-                        double jump = Math.max(55.0, Math.min(320.0, faceMissedM));
-                        double wasM = totalM;
-                        totalM += jump;
-                        if (totalM > rp.length) totalM = rp.length;
-                        jump = totalM - wasM;         // 夹到路线末端之后实际跳了多少
-                        pos = rp.at(totalM);
-                        double rSec = 20 + rnd.nextDouble() * 15;
-                        speedModel.withResume(elapsedSec, rSec);
-                        lastV = Double.NaN;          // 重启：限幅不再拿暂停前的速度当基准
-                        log.log(String.format(Locale.US,
-                                "      ★ 刷脸结束，位置解冻 —— 路线前进 %.0f m"
-                                        + "（轨迹上那条灰虚线缺口），这 %.0f m **不计入有效里程**；"
-                                        + "再挂 %.0f 秒复苏斜坡",
-                                jump, jump, rSec));
-                        log.log(String.format(Locale.US,
-                                "         有效里程 %.0f m ／ 路线进度 %.0f m"
-                                        + "（差 %.0f m = 无效，用户要求：无效就是无效，不补回去）",
-                                validM, totalM, totalM - validM));
-                    }
-                    speedModel.record(0.0, pSec);
-                } else {
                 double want = speedModel.nextSpeed(elapsedSec, intervalSec, totalTSec);
                 v = speedModel.limitAccel(want, lastV, intervalSec);
                 lastV = v;
                 speedModel.record(v, intervalSec);
-                double runSec = intervalSec;
-                stepM = v * runSec;
+                stepM = v * intervalSec;
+                /* ★ 无效里程跑够了就**停在这里**：6 秒一拍会冲出去二三十米，
+                 *   不夹的话"随机 2~20 m"实际会变成"至少一整拍"（24 m 起步）。 */
+                if (faceInvalid) {
+                    double remain = faceInvalidUntilM - totalM;
+                    if (remain > 0 && remain < stepM) {
+                        stepM = remain;
+                        runSec = v > 0.05 ? stepM / v : intervalSec;
+                    }
+                }
                 lastTick = totalM + stepM >= rp.length;
                 if (lastTick) {
                     // 最后一拍：只跑到末端，时长按实际里程折算（避免超跑一段）
@@ -2677,9 +2642,13 @@ public class Ledao {
                     runSec = v > 0.05 ? stepM / v : intervalSec;
                 }
                 totalM += stepM;
-                /* ★ 有效里程同步推进 —— 正常跑出来的每一米两边都算数；
-                 *   只有刷脸解冻那一下的 jump 是「只动 totalM、不动 validM」。 */
-                validM += stepM;
+                /* ★★★ 有效里程：无效里程那一段**一厘米都不加**。
+                 *   于是这一场 final 的 distance 会比几何短 2~20 m ——
+                 *   那正是用户要的"存在无效里程"，只是它现在是一条正常跑出来的路，
+                 *   不再是那条直线缺口。 */
+                double validStep = faceInvalid ? 0.0 : stepM;
+                if (faceInvalid) faceInvalidM += stepM;
+                validM += validStep;
                 elapsedSec += runSec;
                 // ★ 原来这里直接 break —— 末段被整段丢掉，正好压在终点上的那个
                 //   「必过打卡点」就永远命中不了。改成夹到末端，并把这最后一拍跑完。
@@ -2706,8 +2675,8 @@ public class Ledao {
                         kp.timestamp = t0 + Math.round(elapsedSec);
                         /* ★ 报给服务端的是**有效里程**那一刻的值 —— 官方客户端
                          *   logPoints 里的 distance 也是它自己累计的里程
-                         *   （docs/22 §2.3）。路线进度 mm 与有效里程之间差着
-                         *   已经发生过的无效段，这里换算回去。 */
+                         *   （docs/22 §2.3）。换算留着：万一哪天两者又不等（比如
+                         *   系统冻结补了路），这里也不会报错一个数。 */
                         kp.hitKm = Math.max(0, validM - (totalM - mm)) / 1000.0;
                         // ★ 记下「踩到那一刻的实时 GPS」—— 收尾时 logPoints 要报这个坐标
                         //   ★ v1.0.39（#6/#14）：报的是**本机的 GPS 读数**，不是点位坐标 ——
@@ -2745,9 +2714,12 @@ public class Ledao {
                     if (mm < 0) mm = 0;
                     double[] sp = rp.at(mm);
                     /* ★ 采样点里带的「累计里程」是**有效里程**，不是路线进度。
-                     *   轨迹文件里只有经纬度 + b/c 分段，服务端就从这些数里读里程；
-                     *   写有效里程，那段没跑的灰虚线才不会变成 b/c 里的一截。 */
-                    double cumV = Math.max(0, validM - (totalM - mm));
+                     *   轨迹文件里只有经纬度 + b/c 分段，服务端就从这些数里读里程。
+                     *   ★ v1.0.41：无效里程那一拍里 validM 是不动的，所以这几个点
+                     *     一律带**冻结的那个值** —— 不能套下面的减法（那会算成负数，
+                     *     Σb 就不是单调的了）。 */
+                    double cumV = faceInvalid ? validM
+                            : Math.max(0, validM - (totalM - mm));
                     /* ★★★ v1.0.39（#6）：每一点都带**相关误差**，而且起跑头 15 秒更大
                      *   （搜星/冷启动；这正是服务端 start_precision=30 那条阈值存在的理由）。
                      *   误差按米算再换算成度，整条轨迹同时带着本场那 3~5 m 的整体平移。 */
@@ -2818,7 +2790,7 @@ public class Ledao {
                     }
                     double bad = totalM - validM;
                     String badStr = bad > 0.5
-                            ? String.format(Locale.US, "（另有 %.0f m 无效）", bad) : "";
+                            ? String.format(Locale.US, "（进度差 %.0f m）", bad) : "";
                     log.log(String.format(Locale.US,
                             "      #%-3d 有效里程 %5.0f m%s  分配对 [%s]  lpi0×%d(%s)",
                             i, validM, badStr, sg, lpi0Count, lastLpi0Key));
@@ -2854,40 +2826,38 @@ public class Ledao {
                 //   非致命 —— 失败只记日志，收尾照跑（便于看服务端到底怎么判）。
                 if (faceMiddleStatus && !faceMiddleDone && totalM >= faceMiddleDistance) {
                     faceMiddleDone = true;
+                    /* ★★★ v1.0.41（用户第 2 条，第二轮更正）：**到点先不刷脸**。
+                     *
+                     * 用户的第一版说法是「人识别后不立即上传，随机走 2~20 m 再上传」，
+                     * 我上一轮把它做成了"减速慢走 2~20 m、照常算里程"—— 用户随即更正：
+                     *
+                     *   「到人脸打卡的时候不进行打卡，之后进行常规跑步，这样就可以存在
+                     *     无效里程了，无效里程过后再上传人脸，就可以接着正常跑步了」
+                     *
+                     * 也就是：**照片晚传的那 2~20 m 就是无效里程**（只推进路线进度、
+                     * 不推进有效里程），但那一截要按**正常配速**跑完、轨迹是一条正常路线
+                     * —— 不是 v1.0.23~40 那种"位置冻结 + 解开时跳 55~320 m"的直线。
+                     *
+                     * ⚠ 慢走/暂停都不要：用户明确说"之后进行常规跑步"。 */
+                    double gapM = 2.0 + rnd.nextDouble() * 18.0;          // 2~20 m
+                    faceInvalidUntilM = Math.min(rp.length, totalM + gapM);
+                    faceInvalid = faceInvalidUntilM - totalM > 0.5;
                     log.log(String.format(Locale.US,
-                            "      ★ 跑到 %.0f m（服务端要求 %d m 处）—— 中途人脸核验 type=2 …",
-                            totalM, faceMiddleDistance));
-                    /* ★★★ 2026-10-10：把"刷脸那一下"演成真人的样子。
-                     *
-                     * 真机跑到 middle_distance 弹出人脸核验时，人是**停下来**的：
-                     * 掏手机、举到脸前、等识别。那几十秒 GPS 位置不动，回看轨迹
-                     * 就是一段灰虚线 —— 三份真机长轨迹里都有这种直线缺口，
-                     * v1.0.26 把它们逐段还原出来了（`work/gap_probe2.py`）：
-                     *   · 09-29 17-42（2688 m）→ 73.9 + 65.9（连着，合 139.8 m）
-                     *   · 09-29 19-39（3133 m）→ 283.7 / 68.1 / 60.6 m
-                     *   · 09-27 18-49（2662 m）→ 262.7 / 171.4 / 162.7 / 71.3 m
-                     * **关键：门槛在 35~60 m 之间** —— 同一份 09-29 17-42 里，
-                     * 34.8 m 和 33.5 m 的断档官方既不画虚线、里程也不扣；
-                     * 60.6 / 65.9 / 73.9 m 的才画才扣。所以缺口太小等于白扣里程。
-                     * 之后速度是**从接近 0 慢慢爬回巡航**的。
-                     *
-                     * 我们以前是"瞬时"完成（发一个 HTTP 就过去了），轨迹上看不出任何痕迹。
-                     * 现在：① 在暂停起点插一个 speed=0 的采样（位置冻结，缺口就有端点）；
-                     *       ② 真的停 17~30 秒（核验本身的耗时也算在里面，见下面 faceWaitMs）；
-                     *       ③ 告诉 SpeedModel「从这一刻起按 20~35 秒的斜坡爬回来」。
-                     *
-                     * ⚠ 暂停期间**不推进虚拟位置**；解冻那一下把**路线进度**往前跳一段
-                     *   （形成缺口），但**有效里程一点都不加** —— 用户第 4 条：
-                     *   「无效的路段就是无效，不要再补回去了」。所以停表时
-                     *   有效里程 = 路线长度 − 这段无效里程，两边都如实记在日志里。
-                     */
-                    facePauseM = fromM + (totalM - fromM) * 0.35;
-                    if (facePauseM < fromM) facePauseM = fromM;
-                    if (facePauseM > totalM) facePauseM = totalM;
-                    if (facePauseM >= faceFrozenAt) faceEmitFrozen = true;
-                    long faceT0ms = System.currentTimeMillis();
+                            "      ★ 跑到 %.0f m（服务端要求 %d m 处刷脸）—— 先**不传照片**，"
+                                    + "按正常配速再跑 %.0f m（这段算无效里程），跑完再传",
+                            totalM, faceMiddleDistance, faceInvalidUntilM - totalM));
+                }
+
+                /* ★★★ v1.0.41：那 2~20 m 跑完了 —— **现在**才传照片。
+                 *   传完什么都不用改：速度一直是正常配速，接着跑就是了
+                 *   （用户第 2 轮更正：「之后就可以接着正常跑步了」）。 */
+                if (faceInvalid && totalM >= faceInvalidUntilM - 1e-6) {
+                    faceInvalid = false;
+                    log.log(String.format(Locale.US,
+                            "      ★ 无效里程跑完：%.0f m（路线进度 %.0f m ／ 有效里程 %.0f m）"
+                                    + "—— 这就把照片传上去（type=2）…",
+                            faceInvalidM, totalM, validM));
                     String mid = runFaceCheck("中途（type=2，真机 599 m 处）", "2");
-                    long faceCallMs = System.currentTimeMillis() - faceT0ms;
                     if (mid.length() > 0) {
                         faceVerifyId = mid;
                         faceResult = "中途核验 id=" + mid;
@@ -2905,37 +2875,8 @@ public class Ledao {
                                     + "\n（继续跑，但收尾可能被判「人脸照片验证不合格」）", true);
                         } catch (Throwable ignore) { }
                     }
-                    /* 停顿：核验本身耗时 + 一点"人对屏幕"的时间。
-                     * 真机 18:48:06 弹窗 → 18:48:18 拿到 id，约 12 秒。
-                     *
-                     * ★★★ v1.0.26：改成 **17~30 秒**（原来是 5~17 秒）。
-                     *   起因：2026-10-10 15:03 那一跑只停了 7.7 秒、缺口 26 m，
-                     *   用户拿真机记录来问「正常真实刷的时候就会显示（灰虚线），
-                     *   我们这场为什么不显示」。还原真机三份轨迹后看清了：
-                     *   官方对**采样断档**既画灰虚线、又从里程里扣掉，
-                     *   但门槛在 35~60 m 之间（34.8 m 不画，60.6 m 才画）。
-                     *   按巡航 3.7 m/s 折算，17~30 秒 → 缺口 60~130 m，正好落在
-                     *   真机那一档（实测 60.6~283.7 m）。 */
-                    long faceWaitMs = 17000 + (long) (rnd.nextDouble() * 13000);
-                    long faceSleepMs = Math.max(13000, faceWaitMs - faceCallMs);
-                    double facePauseSec = (faceCallMs + faceSleepMs) / 1000.0;
-                    log.log(String.format(Locale.US,
-                            "      ★ 刷脸暂停 %.1f 秒（核验 %d ms + 停顿 %d ms）——"
-                                    + "轨迹上会留一段直线缺口，之后从低速爬回巡航",
-                            facePauseSec, faceCallMs, faceSleepMs));
-                    long pauseFrom = System.currentTimeMillis();
-                    if (!sleep(faceSleepMs)) break;
-                    /* ★ v1.0.30（docs/62）：这一觉是**我们自己计划要睡的**，
-                     *   所以它要算进 pausedMs —— 从 slowTicks 的口径里拿掉，
-                     *   免得每次刷脸都误报一行「这一拍比计划多了 20 秒」。 */
-                    pausedMs += faceSleepMs;
-                    /* 但"计划睡 X 秒、实际睡了 X+60 秒"就是系统冻住了 ——
-                     *   多出来的那截照样要从用时里剔掉。 */
-                    String pauseLine = fz.add(
-                            System.currentTimeMillis() - pauseFrom - faceSleepMs);
-                    if (pauseLine != null) log.log(pauseLine);
-                    facePauseUntil = elapsedSec + facePauseSec;
-                    facePauseLeft = facePauseSec;
+                    log.log("      ★ 传完了，接着按正常配速跑（这一场有效里程到此少算了 "
+                            + String.format(Locale.US, "%.0f", faceInvalidM) + " m）");
                 }
 
                 // ★★★ 人脸核验 —— 起跑前那次已挪到循环**之前**（见循环外那一段，docs/31）。
@@ -2968,7 +2909,12 @@ public class Ledao {
                                 (spent - plan) / 1000.0, plan / 1000.0, spent / 1000.0));
                     }
                 }
-                long wait = plan - spent;
+                /* ★ v1.0.41：无效里程跑完的那一拍只推进了 runSec（< 6 秒）—— 差额从睡眠里扣掉。
+                 *   不扣的话，每刷一次脸这一场就比墙上时钟少几秒，
+                 *   收尾的 used_time 与 start_time→end_time 就对不上了
+                 *   （v1.0.39 #11 好不容易才把这两头对齐）。 */
+                long idleMs = Math.max(0, Math.round((intervalSec - runSec) * 1000.0));
+                long wait = plan - spent - idleMs;
                 long sleepFrom = System.currentTimeMillis();
                 if (!sleep(Math.max(0, wait))) break;
                 /* ★★★ v1.0.30（docs/62）：**睡过头 = 系统把进程冻住了**。
@@ -3031,7 +2977,6 @@ public class Ledao {
                  *   45 分钟的兜底有可能不够 —— 续一下，长跑不会半路掉锁。 */
                 if (i > 0 && i % 50 == 0) SniffGuard.keepAwake();
                 if (lastTick) break;        // 末拍已经处理完（含终点打卡），收工
-                }                           // ← 对应上面那个 else（刷脸暂停时不做推进）
             }
             /* ★★★ v1.0.39（#11）：收尾时刻**不再走虚拟时钟**。
              *   三个口径照样自洽，只是自洽的方式换了：以前是"把冻掉的秒数从钟上减掉"，
@@ -3043,8 +2988,10 @@ public class Ledao {
             res.frozenSec = fz.frozenSec();
             String fzSummary = fz.summary();
             if (fzSummary != null) log.log(fzSummary);
-            /* ★★★ 上报给服务端的里程 = **有效里程**（totalM 里那段刷脸缺口不算）。
-             *   真机同款口径：几何 2688 m 的轨迹，上报 distance 只有 2.5271 km。 */
+            /* ★★★ 上报给服务端的里程 = 真走过的那段路。
+             *   v1.0.41 起刷脸那几米也是走出来的，所以 totalM 与 validM 恒等。
+             *   两个数仍然分开记 —— 将来谁再写出"只动一边"的改动，
+             *   下面那行日志立刻会把它指出来。 */
             double distKm = validM / 1000.0;
             double invalidM = totalM - validM;
             int signUpCount = 0;
@@ -3077,16 +3024,22 @@ public class Ledao {
             } else {
                 log.log("      ✅ 配速在服务端窗口 180~480 s/km 之内");
             }
+            /* ★ v1.0.41（用户第 2 条）：无效里程这一栏又回来了 —— 但它现在是
+             *   「照片晚传的那 2~20 m」，而那一截在轨迹上是**正常跑出来的路**，
+             *   不是直连缺口。真出现异常大（比如把冻结跳点搬回来）就当场说出来。 */
             if (invalidM > 0.5) {
                 log.log(String.format(Locale.US,
-                        "      ★ 有效里程 %.3f km ／ 路线进度 %.3f km ——"
-                                + "刷脸那段 %.0f m 是**无效里程**，没有算进去（用户要求：无效就是无效）",
+                        "      ★ 有效里程 %.3f km ／ 路线进度 %.3f km —— 刷脸前那 %.0f m 是"
+                                + "**无效里程**，没有算进去（用户要求：无效就是无效）；"
+                                + "不过那一截是正常跑出来的，轨迹上没有直线缺口",
                         distKm, totalM / 1000.0, invalidM));
                 if (validM < 2050)
                     log.log(String.format(Locale.US,
                             "      ⚠ 有效里程只有 %.3f km，贴着服务端 2.00 km 的下限 ——"
                                     + "这次可能被判「里程不足」，下次把目标里程调高 0.1~0.2 km。",
                             distKm));
+            } else {
+                log.log("      ✅ 全程没有无效里程（这一场 start_status/middle_status 没要求刷脸）");
             }
             log.log("      分配对 [" + sgAll + "]  signUpCount=" + signUpCount + "/" + keyPts.size()
                     + "（真机 signUpCount < min_log_num(2) 就是「打卡次数过少」）");
