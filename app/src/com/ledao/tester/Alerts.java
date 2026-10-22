@@ -5,13 +5,18 @@ import android.app.AlertDialog;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Looper;
 import android.view.Gravity;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Alerts —— 界面上两种「告诉用户出事了」的方式（2026-10-10 用户第 1、2 条）。
@@ -109,6 +114,108 @@ public final class Alerts {
         } catch (Throwable ignore) {
             // 一个提示卡片画不出来，绝不能影响跑步
         }
+    }
+
+    // ==================================================================
+    //  常驻小卡片（同一 id 只有一张，重复调用就是改字）
+    // ==================================================================
+
+    /** 每张卡片挂着的那块 TextView（id → view） */
+    private static final Map<String, TextView> beacons = new HashMap<>();
+
+    /**
+     * ★★★ v1.0.42（用户第 30 轮）：**能停留、能改字**的小卡片。
+     *
+     * <p>为什么 {@link #flash} 不够用：它只停 1.6 秒、且不能改内容。而
+     * 「弹扫脸 → 无效里程 → 上传照片」这三步是**一段连续的过程**（几秒到十几秒），
+     * 用户要的是能看清"现在走到第几步"，所以这里做成一张**同一张卡**：
+     * 换字而不是叠一堆卡。
+     *
+     * <p>同一 {@code id} 只会存在一张：第二次调用就是改文字 / 改颜色，
+     * 所以界面不会糊成一团。
+     *
+     * @param host 挂到哪个容器上（MainActivity 传 rootFrame）
+     * @param id   这张卡的标识（例如 {@code "face"}）；同一个 id = 同一张卡
+     * @param text 要显示的字（支持换行）
+     * @param warn true=红卡片，false=绿卡片
+     * @param autoHideMs &gt;0 表示这么多毫秒后自己淡出（0 = 一直留着，等下一条来改）
+     */
+    public static void beacon(final ViewGroup host, final String id, final String text,
+                              final boolean warn, final long autoHideMs) {
+        if (host == null || id == null || text == null || text.length() == 0) return;
+        final Runnable work = () -> {
+            try {
+                final Context c = host.getContext();
+                final float d = c.getResources().getDisplayMetrics().density;
+                TextView tv = beacons.get(id);
+                if (tv == null || tv.getParent() != host) {
+                    if (tv != null) {
+                        try { ((ViewGroup) tv.getParent()).removeView(tv); } catch (Throwable ignore) { }
+                    }
+                    tv = new TextView(c);
+                    tv.setTextSize(16f);
+                    tv.setTextColor(Color.WHITE);
+                    tv.setGravity(Gravity.CENTER);
+                    tv.setLineSpacing(2 * d, 1.15f);
+                    tv.setPadding((int) (20 * d), (int) (14 * d), (int) (20 * d), (int) (14 * d));
+                    FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT);
+                    lp.gravity = Gravity.CENTER;
+                    int side = (int) (28 * d);
+                    lp.leftMargin = side;
+                    lp.rightMargin = side;
+                    host.addView(tv, lp);
+                    tv.setAlpha(0f);
+                    tv.animate().alpha(1f).setDuration(180).start();
+                    beacons.put(id, tv);
+                }
+                tv.setText(text);
+                GradientDrawable g = new GradientDrawable();
+                g.setColor(warn ? 0xE6B00020 : 0xE61B7A4B);
+                g.setCornerRadius(14 * d);
+                tv.setBackground(g);
+                tv.animate().alpha(1f).setDuration(120).start();
+            } catch (Throwable ignore) {
+                // 一张卡片画不出来，绝不能影响跑步
+            }
+        };
+        try {
+            if (Looper.myLooper() == Looper.getMainLooper()) work.run();
+            else host.post(work);
+        } catch (Throwable ignore) { }
+        if (autoHideMs > 0) hideBeacon(host, id, autoHideMs);
+    }
+
+    /** 把某张常驻卡片收掉（{@code delayMs} 毫秒之后；&lt;=0 = 立刻） */
+    public static void hideBeacon(final ViewGroup host, final String id, final long delayMs) {
+        if (host == null || id == null) return;
+        final Runnable fade = () -> {
+            try {
+                final TextView tv = beacons.remove(id);
+                if (tv == null) return;
+                tv.animate().alpha(0f).setDuration(320).withEndAction(() -> {
+                    try {
+                        ViewGroup p = (ViewGroup) tv.getParent();
+                        if (p != null) p.removeView(tv);
+                    } catch (Throwable ignore) { }
+                }).start();
+            } catch (Throwable ignore) { }
+        };
+        try {
+            if (delayMs <= 0) {
+                if (Looper.myLooper() == Looper.getMainLooper()) fade.run();
+                else host.post(fade);
+            } else {
+                host.postDelayed(fade, delayMs);
+            }
+        } catch (Throwable ignore) { }
+    }
+
+    /** 新一场跑步开始时把上一场没来得及收的卡片全清掉 */
+    public static void clearBeacons(final ViewGroup host) {
+        if (host == null) return;
+        for (String id : new java.util.ArrayList<>(beacons.keySet())) hideBeacon(host, id, 0);
     }
 
     // ==================================================================

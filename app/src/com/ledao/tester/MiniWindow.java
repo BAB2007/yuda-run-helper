@@ -641,8 +641,51 @@ public final class MiniWindow {
             tvL2.setText(kmText(validM, totalM));
             /* ★ v1.0.34：卡住那个记号挂在**第三行**（用户要的是"跑就写正在跑"，
              *   标题那句留给状态本身）；这一行本来是「配速 … · 打卡 N」，
-             *   加个「❄卡12s」正好还有地方。 */
-            tvL3.setText(paceText(secs, validM) + " · " + hitText(hit) + staleMark(staleMarker));
+             *   加个「❄卡12s」正好还有地方。
+             * ★ v1.0.42：中段人脸那三步也要挂在这里（「📷扫脸」「📷无效8m」「✅人脸」）
+             *   —— 用户切到别的应用时，小窗是他唯一能看见的地方。 */
+            tvL3.setText(paceText(secs, validM) + " · " + hitText(hit)
+                    + staleMark(staleMarker) + faceMark());
+        });
+    }
+
+    /* ==================================================================
+     *  ★★★ v1.0.42（用户第 30 轮）：中段人脸那三步的记号
+     *
+     *  为什么要有它：那三步一共只持续几秒（2~20 m 按正常配速跑完），
+     *  而用户绝大多数时间是**切走了**的（切走才有小窗）。前台那张卡片
+     *  他未必看得见，小窗第三行才是他回头验证"到底做没做"的地方。
+     * ================================================================== */
+
+    /** 现在该挂什么记号（"" = 不挂） */
+    private static volatile String faceNote = "";
+
+    private static String faceMark() {
+        String f = faceNote;
+        return (f == null || f.length() == 0) ? "" : " · " + f;
+    }
+
+    /**
+     * 改这一场的「人脸记号」。
+     *
+     * <p>三个取值由 {@link MainActivity#onFaceScan} / {@link MainActivity#onFaceInvalid}
+     * / {@link MainActivity#onFaceDone} 喂进来：{@code 📷扫脸} → {@code 📷无效8m} → {@code ✅人脸}。
+     * 传空串就是擦掉。可以随便从哪个线程调（内部会 post 到主线程）。
+     */
+    public static void noteFace(final String s) {
+        faceNote = s == null ? "" : s;
+        final double v = lastValidM;
+        final long secs = lastSecs;
+        final int hit = lastHit;
+        final long stale = staleMarker;
+        main().post(() -> {
+            try {
+                if (view == null || !runMode() || tvL3 == null) return;
+                tvL3.setText(paceText(secs, v) + " · " + hitText(hit)
+                        + staleMark(stale) + faceMark());
+            } catch (Throwable ignore) {
+                /* 刷字失败不值得把跑步搞挂 */
+            }
         });
     }
 
