@@ -95,6 +95,32 @@ public class RoutePlan {
          * ★ 传了提示值时不会消耗那次随机抽样，所以随机序列与不传时不同（这是有意的）。
          */
         public double targetM = Double.NaN;
+
+        /* ★★★ v1.0.41（用户第 1 条）：「打卡点尽量远离起点、终点、人脸识别点」。
+         *
+         *   为什么要这三道：真机那张轨迹上，打卡点既不贴着起跑线、也不落在收尾那
+         *   一百来米里，更不会跟人脸核验撞在同一处 —— 三件事挤在一处，读轨迹的人
+         *   一眼就能看出是排好的。而生成器原来只认「两个打卡点到得了 + 里程够」，
+         *   起点恰好抽在打卡点隔壁、最后一个打卡点恰好压在终点前几十米、或者跑过
+         *   600 m 那一刻正好在打卡点圈里，都是常有的事。
+         *
+         *   实现分两层：
+         *     ① {@link Result#punchM} 把「第一次进入 30 m 判定圈」的里程量出来 ——
+         *        这是**真跑的时候真的会打卡的那一刻**（Ledao 的判定半径也是 30 m），
+         *        不是"整条线上离点位最近的那一点"（那两点常常差出几百米）；
+         *     ② {@link #generate} 拿这三道余量当收线条件，换了派生种子多试几次；
+         *        都不满足就退而求其次返回余量最大的那条 ——「尽量」就是这个意思。
+         *
+         *   ⚠ 阈值别盲目抬高：起点离打卡点越远，游走要先走的"空路"越多，
+         *     2.00 km 那道门就越紧。这三个数是对着 2000 条的实测分布定的（docs/84）。 */
+        /** 第一个打卡点离起点至少这么远（米）；&lt;=0 = 这一道不查 */
+        public double punchStartClearM = 260;
+        /** 最后一个打卡点离终点至少这么远（米）；&lt;=0 = 这一道不查 */
+        public double punchEndClearM = 220;
+        /** 打卡点离人脸核验点至少这么远（米）；&lt;=0 = 这一道不查 */
+        public double punchFaceClearM = 120;
+        /** 人脸核验落在路线多少米处。服务端 run_face_verify_config.middle_distance 就是它 */
+        public double faceM = 600;
     }
 
     public static class Result {
@@ -112,6 +138,13 @@ public class RoutePlan {
         public double repeatLenM;
         public int[] edges = new int[0];
         public int[] visitOrder = new int[0];   // 1=A, 2=B，打卡顺序
+
+        /* ★ v1.0.41：两个打卡点「第一次进入 30 m 判定圈」的路线里程（米），顺序同 cpA/cpB */
+        public double[] punchM = new double[0];
+        /** 三道避让的余量（米，正 = 满足；NaN = 那道没查） */
+        public double clearStart = Double.NaN, clearEnd = Double.NaN, clearFace = Double.NaN;
+        /** 软约束没全满足时的说明 —— 返回的仍是"尽量好"的那一条 */
+        public String softwhy = "";
 
         public String summary() {
             return String.format(java.util.Locale.US,
@@ -265,20 +298,96 @@ public class RoutePlan {
         Opts o = opts != null ? opts : new Opts();
         int tries = Math.max(1, o.maxTries);
         Result last = null;
+        Result best = null;                  // ★ v1.0.41：避让没全满足时，留余量最大的那条
+        double bestSlack = -Double.MAX_VALUE;
         for (int t = 0; t < tries; t++) {
             long s = (seed + (long) t * 1000003L) & 0xFFFFFFFFL;
             Result r = generateOnce(G, cpA, cpB, o, new Rng(s), s);
-            if (r.ok && r.lengthM >= o.minLenM && r.lengthM <= o.maxLenM) { r.tries = t + 1; return r; }
-            if (r.ok) {
-                Result bad = new Result();
-                bad.ok = false;
-                bad.seed = s;
-                bad.why = String.format(java.util.Locale.US, "里程越界（%.0f m）", r.lengthM);
-                bad.lengthM = r.lengthM;
-                last = bad;
-            } else last = r;
+            if (!r.ok || r.lengthM < o.minLenM || r.lengthM > o.maxLenM) {
+                if (r.ok) {
+                    Result bad = new Result();
+                    bad.ok = false;
+                    bad.seed = s;
+                    bad.why = String.format(java.util.Locale.US, "里程越界（%.0f m）", r.lengthM);
+                    bad.lengthM = r.lengthM;
+                    last = bad;
+                } else last = r;
+                continue;
+            }
+            r.tries = t + 1;
+            /* ★★★ v1.0.41：里程合规之后再看三道避让（起点 / 终点 / 人脸点）。
+             *   全满足就当场收工；不满足就换下一个派生种子 —— 换种子只改这条线的
+             *   形状，不改任何参数，所以「预览↔开跑逐点相同」那条不变
+             *   （同样的输入两次都走同一条分支）。 */
+            double slack = clearSlack(G, cpA, cpB, r, o);
+            if (Double.isNaN(slack) || slack >= 0) return r;
+            if (slack > bestSlack) { bestSlack = slack; best = r; }
+        }
+        if (best != null) {
+            best.softwhy = String.format(java.util.Locale.US,
+                    "尽量了 —— 最紧的一项还差 %.0f m（起点余 %.0f / 终点余 %.0f / 人脸余 %.0f）",
+                    -bestSlack, best.clearStart, best.clearEnd, best.clearFace);
+            return best;
         }
         return last != null ? last : new Result();
+    }
+
+    /** 打卡判定半径（米）—— 和 {@code Ledao.run()} 里那个 30 m 是同一个数 */
+    public static final double PUNCH_R = 30.0;
+
+    /**
+     * 这个打卡点会在**路线多少米处**被打到 —— 就是第一次进入 {@code radiusM} 判定圈的那一刻。
+     *
+     * <p>为什么要沿折线扫而不是找"最近点"：一条 2 km 的线常常从点位旁边过两三次
+     * （去一趟、凑里程再绕回来），打卡只发生在**第一次**进圈的时候。真按最近点算，
+     * 会把"其实第 200 m 就打了"的点误判成"第 1.4 km 才打"，避让就调歪了。
+     *
+     * @return 里程（米）；整条线一次都没进圈时，返回离得最近那一点的里程
+     */
+    public static double punchAlong(RouteGen.Path path, double lat, double lon, double radiusM) {
+        if (path == null || path.pts.size() == 0) return 0;
+        double cosLat = Math.cos(lat * Math.PI / 180.0);
+        double bestD = Double.MAX_VALUE, bestCum = 0;
+        for (int i = 0; i < path.pts.size(); i++) {
+            double[] p = path.pts.get(i);
+            double dy = (p[0] - lat) * 111132.0;
+            double dx = (p[1] - lon) * 111320.0 * cosLat;
+            double d = Math.sqrt(dx * dx + dy * dy);
+            double cum = path.cum.get(i);
+            if (d <= radiusM) return cum;
+            if (d < bestD) { bestD = d; bestCum = cum; }
+        }
+        return bestCum;
+    }
+
+    /**
+     * 三道避让的余量（米）。正数 = 满足，负数 = 差多少，NaN = 这一道不查。
+     *
+     * <p>顺手把 {@link Result#punchM} 与 {@link Result#clearStart} 等写回去 ——
+     * 界面/日志要用这几个数，别只留在局部变量里。
+     */
+    static double clearSlack(RouteNet G, int cpA, int cpB, Result r, Opts o) {
+        int ia = G.indexOfN(cpA), ib = G.indexOfN(cpB);
+        if (ia < 0 || ib < 0 || r.path == null) return Double.NaN;
+        double pA = punchAlong(r.path, G.cpLat[ia], G.cpLon[ia], PUNCH_R);
+        double pB = punchAlong(r.path, G.cpLat[ib], G.cpLon[ib], PUNCH_R);
+        r.punchM = new double[]{pA, pB};
+        double first = Math.min(pA, pB), last = Math.max(pA, pB);
+        double slack = Double.POSITIVE_INFINITY;
+        if (o.punchStartClearM > 0) {
+            r.clearStart = first - o.punchStartClearM;
+            slack = Math.min(slack, r.clearStart);
+        }
+        if (o.punchEndClearM > 0) {
+            r.clearEnd = (r.lengthM - last) - o.punchEndClearM;
+            slack = Math.min(slack, r.clearEnd);
+        }
+        if (o.faceM > 0 && o.punchFaceClearM > 0) {
+            double dA = Math.abs(pA - o.faceM), dB = Math.abs(pB - o.faceM);
+            r.clearFace = Math.min(dA, dB) - o.punchFaceClearM;
+            slack = Math.min(slack, r.clearFace);
+        }
+        return Double.isInfinite(slack) ? Double.NaN : slack;
     }
 
     // ==================================================================
