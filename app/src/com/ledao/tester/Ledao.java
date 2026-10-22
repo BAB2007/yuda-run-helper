@@ -204,8 +204,8 @@ public class Ledao {
         /**
          * 中段人脸核验 ②：正在跑那段**无效里程**（有效里程不动、路线进度在走）。
          *
-         * @param doneM 这段已经跑了多少米
-         * @param gapM  到这一拍为止缺口有多大（米；收尾时 onFaceDone 报的是最终值）
+         * @param doneM 这段已经走了多少米
+         * @param gapM  这一场缺口一共多长（米，v1.0.44 起是开头就定好的 30~38 m）
          */
         default void onFaceInvalid(double doneM, double gapM) { }
 
@@ -2412,14 +2412,33 @@ public class Ledao {
              * （那一套只在"人真的停过"的场合才有意义，现在 Ledao 里没人调它）。 */
             SpeedModel speedModel = SpeedModel.forPace(paceLoMin, paceHiMin, rnd);
             double lastV = Double.NaN;
-            /* ---- 中途刷脸「缺口」那一段的状态（v1.0.43，用户第 31 轮）----
-             * 跑到 middle_distance 就**照真机那样暂停**：暂停这十几秒里**一个点都不落**，
+            /* ---- 中途刷脸「缺口」那一段的状态（v1.0.43 起，用户第 31 轮）----
+             * 跑到 middle_distance 就**照真机那样暂停**：这一段里**一个点都不落**，
              * 但虚拟人还在沿路线往前（真机是用户拿着手机走过去扫脸），于是轨迹上
              * 两点之间留出一段空档 —— 乐跑把它画成灰虚线，就是用户要的「缺口的效果」。
-             * 里程照旧不算那一段（无效里程），用时照旧在走（真机 pauseRun 也一样）。 */
-            boolean faceInvalid = false;       // 正在「暂停扫脸」那一段：不落点、不计里程
-            double faceInvalidM = 0;           // 暂停期间推进了多少米（= 缺口长度，米）
-            double facePauseUntilSec = 0;      // 暂停到这个时刻（本场计时，秒）就传照片、继续
+             * 里程照旧不算那一段（无效里程），用时照旧在走（真机 pauseRun 也一样）。
+             *
+             * ★★★ v1.0.44（用户第 33 轮「按你感觉最合适的来」）：缺口改成按
+             *   **路线距离**给，不再按秒给。
+             *
+             *   v1.0.43 是"暂停 12~20 秒"，配速 3.8 m/s 时那一停就是 46~77 米
+             *   （2026-10-22 18:57 实测缺口 **66 米**）。可服务端下发的规则里写着
+             *   `android_gps_max_distance = 30`，而真机 10-06 那一场（官方客户端
+             *   自己记的 272 个点）里，相邻点距最大的也就是 **34.8 / 32.9 m**
+             *   （起跑搜星抖的那两下 —— 所以 30 并没有被硬执行），日常是 11.5 m。
+             *   66 米 = 真机点距的 1.9 倍、日常点距的 5.7 倍，是"真机从没出现过"
+             *   的数，白给服务端一条自家样本里没有的特征。
+             *
+             *   现在固定缺 **30~38 米**（均值 34 ≈ 真机最大点距 34.8）：
+             *     · 照旧一个点都不落、照旧不算里程、轨迹上照旧缺一块；
+             *     · 但两头那两点之间的距离落在**真机自己跑出来过**的量级里；
+             *     · 又比日常点距（11.5 m）长 3 倍，肉眼还是能看出那一段是空的。
+             *   暂停多久不由我们定 —— 30~38 m ÷ 3.5~4.5 m/s ≈ 7~11 秒
+             *   （真机那次是 14 秒，同一个量级）。 */
+            boolean faceInvalid = false;       // 正在「缺口」那一段：不落点、不计里程
+            double faceInvalidM = 0;           // 缺口里已经走掉多少米（界面 ② 用）
+            double faceGapStartM = 0;          // 缺口起点（路线位置，米）
+            double faceGapEndM = 0;            // 走到这个路线位置就恢复记录（米）
             double faceGapM = 0;               // 收尾时用的「缺口总长」
             /* ★★★ totalM ／ validM 两个计数器 —— v1.0.41 的口径：
              *
@@ -2455,15 +2474,16 @@ public class Ledao {
             List<String> doneIds = new ArrayList<>();
             long lastReport = 0;                          // ★ 上次位置心跳的时间（秒）
             /* ★★★ v1.0.41（用户第 2 条）：无效里程回来了，但**不再是那条直线**。
-             *   跑到 middle_distance 先**暂停**（真机 pauseRun），12~20 秒不落点、
-             *   不推进有效里程），暂停完才传照片 —— 于是 distance 比路线几何短那一段（缺口），
-             *   而轨迹本身是一整条正常路线（没有断档、没有跳点）。
-             *   2.00 km 那道门几乎不受影响（最多少 20 m），不用预扣。 */
+             *   跑到 middle_distance 先**暂停**（真机 pauseRun），不落点、不推进有效里程，
+             *   暂停完才传照片 —— 于是 distance 比路线几何短那一段（缺口）。
+             *   ★ v1.0.44：缺口按距离给（30~38 m），不再按秒给，见下面的状态声明。
+             *   2.00 km 那道门几乎不受影响（最多少 38 m），不用预扣。 */
             if (faceMiddleStatus) {
                 log.log(String.format(Locale.US,
-                        "      ★ 中途刷脸在 %d m 处：到点**暂停** 12~20 秒（真机 14 秒），"
-                                + "暂停期间不落点 —— 轨迹上留一段缺口，那一段算无效里程；"
-                                + "暂停完才传照片，然后接着跑",
+                        "      ★ 中途刷脸在 %d m 处：到点**暂停**，接下来 30~38 m 不落点"
+                                + "（真机点距最大 34.8 m，同一个量级；约 7~11 秒）"
+                                + " —— 轨迹上留一段缺口，那一段算无效里程；"
+                                + "走完才传照片，然后接着跑",
                         faceMiddleDistance));
             }
             List<MapShot.P> shot = new ArrayList<>();     // 画截图用
@@ -2677,16 +2697,23 @@ public class Ledao {
                 }
                 totalM += stepM;
                 /* ★★★ v1.0.43（用户第 31 轮「我所想要的就是缺口的效果」）：
-                 *   暂停扫脸这段时间，**里程一米都不加**（无效里程），
-                 *   而路线进度照常往前 —— 于是轨迹上会空出这一段。
-                 *   真机也是这个账：21:42:18 pauseRun → 距离一直冻在 970.0112，
-                 *   21:42:32 恢复后接着记 970.35。 */
-                double validStep = faceInvalid ? 0.0 : stepM;
-                if (faceInvalid) faceInvalidM += stepM;
-                validM += validStep;
-                /* ★ v1.0.42：暂停期间把「缺口已经多大」报给界面。 */
+                 *   缺口那一段，**里程一米都不加**（无效里程），路线进度照常往前 ——
+                 *   于是轨迹上会空出这一段。真机也是这个账：21:42:18 pauseRun →
+                 *   距离一直冻在 970.0112，21:42:32 恢复后接着记 970.35。
+                 *   ★ v1.0.44：缺口按**路线位置**切，所以它可能正好落在一拍中间 ——
+                 *     这一拍要拆成"缺口里"和"缺口后"两截分别记账（不是整拍不计）。 */
+                final double stepFromM = totalM - stepM;
+                double validStep = stepM;
                 if (faceInvalid) {
-                    try { log.onFaceInvalid(faceInvalidM, faceInvalidM); }
+                    double gapPart = Math.max(0, faceGapEndM - stepFromM);
+                    if (gapPart > stepM) gapPart = stepM;
+                    faceInvalidM += gapPart;
+                    validStep = stepM - gapPart;
+                }
+                validM += validStep;
+                /* ★ v1.0.42：缺口期间把「缺口已经多大」报给界面。 */
+                if (faceInvalid) {
+                    try { log.onFaceInvalid(faceInvalidM, faceGapEndM - faceGapStartM); }
                     catch (Throwable ignore) { }
                 }
                 elapsedSec += runSec;
@@ -2745,16 +2772,34 @@ public class Ledao {
                 //   所以这里按 3 秒在拍内插值补点。
                 //   ★ 速度现在是连续变化的，所以这里按**本拍均速**均匀插值，
                 //     点距自然落在 8~11 m（v 3.5~4.5 m/s × 2.4~2.8 s）。
-                /* ★★★ v1.0.43（第 31 轮「缺口」）：暂停扫脸这段时间**一个点都不落**。
+                /* ★★★ v1.0.43（第 31 轮「缺口」）：缺口那一段**一个点都不落**。
                  *   这正是缺口本身 —— 真机 21:42:18~21:42:32 那 14 秒里
                  *   `handleLocationData :false,1,true,true` 一直在跑，但轨迹文件里
-                 *   那一段是空的，乐跑就把两头连成一条灰虚线。 */
-                if (!faceInvalid) {
+                 *   那一段是空的，乐跑就把两头连成一条灰虚线。
+                 *   ★ v1.0.44：缺口边界可能落在一拍中间 —— 只要这一拍越过了缺口终点，
+                 *     就**先在缺口终点补一个点**（恢复记录的第一个点），
+                 *     这样轨迹上那两点之间的距离就正好等于缺口长度，不会多出半拍来。 */
+                {
                     double sampleSpan = Math.min(3.0, Math.max(1.5, runSec / 2.0));
                     int nSub = Math.max(1, (int) Math.ceil(runSec / sampleSpan));
-                    for (int s2 = 1; s2 <= nSub; s2++) {
-                        double frac = (double) s2 / nSub;
-                        double mm = fromM + stepM * frac;
+                    boolean gapEndsHere = faceInvalid
+                            && fromM < faceGapEndM - 1e-6 && totalM >= faceGapEndM - 1e-6;
+                    int emitted = 0;
+                    for (int s2 = 0; s2 <= nSub; s2++) {
+                        double frac, mm;
+                        if (s2 == 0) {
+                            /* 缺口终点那一下：恢复记录的第一个点，钉在边界上 */
+                            if (!gapEndsHere) continue;
+                            mm = faceGapEndM;
+                            frac = stepM > 0.05 ? (mm - fromM) / stepM : 1.0;
+                        } else {
+                            frac = (double) s2 / nSub;
+                            mm = fromM + stepM * frac;
+                            /* 还在缺口里（含刚刚那个边界点）—— 一个点都不落 */
+                            if (faceInvalid && mm <= faceGapEndM + 1e-6) continue;
+                        }
+                        if (frac < 0) frac = 0;
+                        if (frac > 1) frac = 1;
                         if (mm > totalM + 1e-6) mm = totalM;
                         if (mm < 0) mm = 0;
                         double[] sp = rp.at(mm);
@@ -2770,8 +2815,10 @@ public class Ledao {
                         double pLon = sp[1] + offLonDeg + mToLon(gps.e, sp[0]);
                         samples.add(new double[]{pLat, pLon, v, cumV,
                                 vTick / 1000.0 + runSec * frac});
+                        emitted++;
                     }
-                    shot.add(new MapShot.P(pos[0] + offLatDeg, pos[1] + offLonDeg, v));
+                    if (emitted > 0)
+                        shot.add(new MapShot.P(pos[0] + offLatDeg, pos[1] + offLonDeg, v));
                 }
 
                 // ★★★ 位置心跳 —— 对齐真机实测节拍：
@@ -2882,33 +2929,38 @@ public class Ledao {
                      * 也不停表：21:34:28 起跑 → 21:49:53 收尾 = 925 秒，中间那 14 秒
                      * 是算在 used_time 里的）。
                      *
-                     * 缺口多长：暂停 12~20 秒（真机实测 14 秒）× 当时配速
-                     * （3.5~4.5 m/s）≈ **40~90 米**，一次能看到。 */
-                    double pauseSec = 12.0 + rnd.nextDouble() * 8.0;      // 12~20 s
-                    facePauseUntilSec = elapsedSec + pauseSec;
+                     * 缺口多长：**按路线距离给，30~38 米**（v1.0.44 改的口径，见上）。
+                     * 暂停多久由配速决定：30~38 m ÷ 3.5~4.5 m/s ≈ 7~11 秒。
+                     * v1.0.43 是"暂停 12~20 秒"，同样配速下就是 46~77 米 ——
+                     * 实测 66 米，比真机自己跑出来的最大点距（34.8 m）还大一倍，
+                     * 白白多一条自家样本里没有的特征，所以收回来了。 */
+                    double gapWant = 30.0 + rnd.nextDouble() * 8.0;        // 30~38 m
+                    faceGapStartM = totalM;
+                    faceGapEndM = Math.min(rp.length, totalM + gapWant);
                     faceInvalid = true;
                     faceInvalidM = 0;
                     log.log(String.format(Locale.US,
                             "      ★ ① 弹扫脸：跑到 %.0f m（服务端要求 %d m 处）—— **暂停**，先不传照片",
                             totalM, faceMiddleDistance));
                     log.log(String.format(Locale.US,
-                            "      ★ ② 缺口：暂停 %.1f 秒（这 %.1f 秒里**不落一个点**，人还在往前走）"
-                                    + "，走完才传照片", pauseSec, pauseSec));
+                            "      ★ ② 缺口：%.0f → %.0f m 这一段**不落一个点**（%.1f m，"
+                                    + "人还在往前走），走完才传照片",
+                            faceGapStartM, faceGapEndM, faceGapEndM - faceGapStartM));
                     /* ★ v1.0.42：把「扫脸中」这一步**画到界面上**（用户第 30 轮：
                      *   「没有弹扫脸 —— 无效里程 —— 上传人脸照片这一过程」）。 */
                     try { log.onFaceScan(totalM); } catch (Throwable ignore) { }
                 }
 
-                /* ★★★ v1.0.43：暂停时间到 —— **现在**才传照片，传完接着落点。
-                 *   恢复后的第一个点离暂停前最后一个点 40~90 m 远，
+                /* ★★★ v1.0.43：走到缺口终点 —— **现在**才传照片，传完接着落点。
+                 *   恢复后的第一个点离暂停前最后一个点 30~38 m 远，
                  *   那正是轨迹上那段缺口。 */
-                if (faceInvalid && elapsedSec >= facePauseUntilSec - 1e-6) {
+                if (faceInvalid && totalM >= faceGapEndM - 1e-6) {
                     faceInvalid = false;
                     faceGapM = faceInvalidM;
                     log.log(String.format(Locale.US,
-                            "      ★ ③ 上传照片：缺口 %.0f m（路线进度 %.0f m ／ 有效里程 %.0f m）"
+                            "      ★ ③ 上传照片：缺口 %.0f m（路线 %.0f m 处接上，有效里程 %.0f m）"
                                     + "—— 现在把照片传上去（type=2）…",
-                            faceInvalidM, totalM, validM));
+                            faceGapM, faceGapEndM, validM));
                     String mid = runFaceCheck("中途（type=2，真机 599 m 处）", "2");
                     if (mid.length() > 0) {
                         faceVerifyId = mid;
@@ -2930,12 +2982,12 @@ public class Ledao {
                     /* ★ v1.0.42：把「上传完了」这一步也画到界面上 —— 结论 + 这一场
                      *   到底缺了多少米，用户跑完回头看一眼就明白缺口落在哪。 */
                     try {
-                        log.onFaceDone(faceInvalidM, lastFaceStatus == 1,
+                        log.onFaceDone(faceGapM, lastFaceStatus == 1,
                                 lastFaceStatus, lastFaceInfo);
                     } catch (Throwable ignore) { }
                     log.log(String.format(Locale.US,
                             "      ★ 传完了，接着跑（轨迹上从 %.0f m 处接上，缺口 %.0f m）",
-                            totalM, faceInvalidM));
+                            faceGapEndM, faceGapM));
                 }
 
                 // ★★★ 人脸核验 —— 起跑前那次已挪到循环**之前**（见循环外那一段，docs/31）。
@@ -3094,6 +3146,19 @@ public class Ledao {
                         "      ★ 有效里程 %.3f km ／ 路线进度 %.3f km —— 暂停扫脸那 %.0f m 是"
                                 + "**无效里程**（没算进去），轨迹上就是那一段缺口",
                         distKm, totalM / 1000.0, invalidM));
+                /* ★★★ v1.0.44：把「轨迹上那一段到底多长」算出来，和真机自己跑过的比一比。
+                 *   这一行是给下一次复盘用的：缺口大不大、有没有超出真机出现过的量级
+                 *   （真机 10-06 那场 272 个点，相邻点距最大 34.8 m —— 起跑搜星抖的）。 */
+                double maxSpacing = 0;
+                for (int i = 1; i < samples.size(); i++) {
+                    double d = dist(samples.get(i - 1), samples.get(i));
+                    if (d > maxSpacing) maxSpacing = d;
+                }
+                log.log(String.format(Locale.US,
+                        "      ★ 轨迹上相邻两点最大间距 %.1f m（缺口 %.0f m）—— 真机最大值 34.8 m，%s",
+                        maxSpacing, faceGapM,
+                        maxSpacing <= 40.0 ? "同一个量级 ✅"
+                                : "已经超出真机见过的量级 ⚠"));
                 if (validM < 2050)
                     log.log(String.format(Locale.US,
                             "      ⚠ 有效里程只有 %.3f km，贴着服务端 2.00 km 的下限 ——"
