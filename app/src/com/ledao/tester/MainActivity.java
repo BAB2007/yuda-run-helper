@@ -4134,39 +4134,39 @@ public class MainActivity extends Activity implements Ledao.Log {
     //
     //  所以这里给三步各配一张卡（**同一张卡换字**，不是叠三张）：
     //      ① 扫脸中…        （到 500 m，照片还没传）
-    //      ② 无效里程 8/13 m（这段只推路线、不计里程）
-    //      ③ ✅ 已上传        （照片传完，接着正常跑）
+    //      ② 缺口 41 m（暂停中，这段不落点、不计里程）
+    //      ③ ✅ 已上传        （照片传完，接着跑；轨迹上缺口就在那儿）
     //  走完 3 秒自己淡出；跑完那一场日志里也会再复述一次。
     // ==================================================================
 
-    /** 中段人脸 ①：到点了，开始「扫脸」（照片还没传） */
+    /** 中段人脸 ①：到点了，开始「扫脸」（照片还没传，跑步暂停） */
     @Override
     public void onFaceScan(final double atM) {
         final MainActivity dst = (LIVE != null) ? LIVE : this;
         dst.ui.post(() -> {
             try {
                 Alerts.beacon(dst.rootFrame, "face", String.format(Locale.US,
-                        "📷 人脸核验（%.0f m 处）\n① 扫脸中… 先不传照片\n接着按正常配速继续跑", atM),
+                        "📷 人脸核验（%.0f m 处）\n① 扫脸中… 先不传照片\n（暂停，轨迹上会留一段缺口）", atM),
                         false, 0);
                 dst.setStatus(String.format(Locale.US,
-                        "📷 人脸核验：%.0f m 到了 —— 先不传照片，按正常配速再跑 2~20 m（算无效里程）", atM));
+                        "📷 人脸核验：%.0f m 到了 —— 暂停扫脸，这段不落点（轨迹上就是缺口）", atM));
                 MiniWindow.noteFace("📷扫脸");
             } catch (Throwable ignore) { }
         });
     }
 
-    /** 中段人脸 ②：正在跑那段无效里程（有效里程不动，路线进度在走） */
+    /** 中段人脸 ②：暂停期间，缺口在变长（不落点、不计里程） */
     @Override
     public void onFaceInvalid(final double doneM, final double gapM) {
         final MainActivity dst = (LIVE != null) ? LIVE : this;
         dst.ui.post(() -> {
             try {
                 Alerts.beacon(dst.rootFrame, "face", String.format(Locale.US,
-                        "📷 人脸核验 · 扫脸中\n② 无效里程 %.0f / %.0f m\n（这段只走路、不记里程）",
-                        doneM, gapM), false, 0);
+                        "📷 人脸核验 · 扫脸中\n② 缺口 %.0f m（暂停中）\n（这一段不落点、不计里程）",
+                        doneM), false, 0);
                 dst.setStatus(String.format(Locale.US,
-                        "⏳ 无效里程 %.0f / %.0f m —— 这一点距离不会算进上报里程", doneM, gapM));
-                MiniWindow.noteFace(String.format(Locale.US, "📷无效%.0fm", doneM));
+                        "⏳ 暂停扫脸中 —— 缺口已 %.0f m（这一段不会算进上报里程）", doneM));
+                MiniWindow.noteFace(String.format(Locale.US, "📷缺口%.0fm", doneM));
             } catch (Throwable ignore) { }
         });
     }
@@ -4179,14 +4179,14 @@ public class MainActivity extends Activity implements Ledao.Log {
             try {
                 Alerts.beacon(dst.rootFrame, "face", ok
                         ? String.format(Locale.US,
-                                "✅ 人脸核验通过 · 照片已上传\n③ 无效里程 %.0f m\n接着按正常配速跑", invalidM)
+                                "✅ 人脸核验通过 · 照片已上传\n③ 缺口 %.0f m，接着跑", invalidM)
                         : String.format(Locale.US,
-                                "⚠ 人脸核验没通过（status=%d）\n③ 无效里程 %.0f m —— 继续跑，收尾可能被判 59",
+                                "⚠ 人脸核验没通过（status=%d）\n③ 缺口 %.0f m —— 继续跑，收尾可能被判 59",
                                 status, invalidM),
                         !ok, 3000);
                 dst.setStatus(ok
                         ? String.format(Locale.US,
-                                "✅ 人脸核验通过 · 照片已上传 —— 本场无效里程 %.0f m，接着正常跑", invalidM)
+                                "✅ 人脸核验通过 · 照片已上传 —— 本场缺口 %.0f m，接着跑", invalidM)
                         : "⚠ 人脸核验没通过 —— 继续跑（收尾可能被判「人脸照片验证不合格」）");
                 MiniWindow.noteFace(ok ? "✅人脸" : "⚠人脸");
             } catch (Throwable ignore) { }
@@ -4364,10 +4364,11 @@ public class MainActivity extends Activity implements Ledao.Log {
              *   用法（电脑上）：
              *     adb shell am start -n com.ledao.tester/.MainActivity --es selftest facemid
              *   然后用 screencap 抓三张图（2.5 s / 6.5 s / 9 s 各一张）。 */
-            log("[自检] 中段人脸三步：① 扫脸 → ② 无效里程 → ③ 上传照片（演示值，不联网、不上传）");
+            log("[自检] 中段人脸三步：① 扫脸 → ② 缺口 → ③ 上传照片（演示值，不联网、不上传）");
             onFaceScan(500);
-            ui.postDelayed(() -> onFaceInvalid(4, 13), 2500);
-            ui.postDelayed(() -> onFaceDone(13, true, 1, "人脸验证成功！"), 6500);
+            ui.postDelayed(() -> onFaceInvalid(18, 18), 2500);
+            ui.postDelayed(() -> onFaceInvalid(41, 41), 5000);
+            ui.postDelayed(() -> onFaceDone(41, true, 1, "人脸验证成功！"), 6500);
             ui.postDelayed(() -> {
                 Alerts.hideBeacon(rootFrame, "face", 0);
                 MiniWindow.noteFace("");
