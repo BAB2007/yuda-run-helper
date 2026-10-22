@@ -180,6 +180,45 @@ public class Ledao {
          */
         default void onFacePre(boolean ok, int status, String info) { }
 
+        /* ==================================================================
+         *  ★★★ v1.0.42（用户第 30 轮）：「弹扫脸 → 无效里程 → 上传照片」
+         *  这一步以前**在界面上完全不存在** —— 到点只是往日志里写一行，
+         *  用户跑完去看步道乐跑那条记录，轨迹是一条完整的正常路线（那是
+         *  v1.0.41 特意做的），于是他说「没有这一过程」。
+         *
+         *  三步各给一个回调，界面就能把过程**当场**画出来：
+         *    ① onFaceScan   到点了 → 弹「扫脸中」，**先不传照片**
+         *    ② onFaceInvalid 正在跑那 2~20 m → 报「无效里程 x / N m」
+         *    ③ onFaceDone   照片传完了 → 报结论 + 这一场到底差了多少米
+         *
+         *  三个都是 default 空实现：脚本、测试、老实现类不用改。
+         * ================================================================== */
+
+        /**
+         * 中段人脸核验 ①：跑到核验点，**开始扫脸**（照片还没传）。
+         *
+         * @param atM 当前路线进度（米）—— 就是服务端 {@code middle_distance} 那一点
+         */
+        default void onFaceScan(double atM) { }
+
+        /**
+         * 中段人脸核验 ②：正在跑那段**无效里程**（有效里程不动、路线进度在走）。
+         *
+         * @param doneM 这段已经跑了多少米
+         * @param gapM  这一段总共多长（2~20 m）
+         */
+        default void onFaceInvalid(double doneM, double gapM) { }
+
+        /**
+         * 中段人脸核验 ③：照片传完了（这一步在无效里程跑完之后）。
+         *
+         * @param invalidM 本场已经跑出来的无效里程（米）
+         * @param ok       true = 服务端 status==1
+         * @param status   服务端 status（-1 = 这一枪没发出去）
+         * @param info     服务端原话（可能为空）
+         */
+        default void onFaceDone(double invalidM, boolean ok, int status, String info) { }
+
         /**
          * ★ 2026-10-10：一闪而过的提示，不用点、不打断。
          * 用在「跑步途中出现了值得说一句、但不至于停下」的事情上
@@ -2379,6 +2418,10 @@ public class Ledao {
             boolean faceInvalid = false;       // 正在跑「刷脸前那段无效里程」
             double faceInvalidUntilM = 0;      // 路线进度到这里就把照片传上去
             double faceInvalidM = 0;           // 本场已经跑出来的无效里程（米）
+            /* ★ v1.0.42：这一段**到底多长**（2~20 m 里抽到的那个数）。
+             *   以前它是触发处的一个局部变量，界面上要看"无效里程 8 / 13 m"
+             *   的进度就必须拿到它，所以拎到外面来。 */
+            double faceGapM = 0;               // 这一段无效里程的总长度（米）
             /* ★★★ totalM ／ validM 两个计数器 —— v1.0.41 的口径：
              *
              *   totalM —— **路线进度**：虚拟人此刻站在路线上的哪一点。
@@ -2649,6 +2692,13 @@ public class Ledao {
                 double validStep = faceInvalid ? 0.0 : stepM;
                 if (faceInvalid) faceInvalidM += stepM;
                 validM += validStep;
+                /* ★ v1.0.42：这一拍还在跑无效里程 → 把「x / N m」报给界面。
+                 *   用户要的三步里，中间那步（无效里程）以前只有一行日志，
+                 *   界面上什么都不动，看起来就像"没发生"。 */
+                if (faceInvalid) {
+                    try { log.onFaceInvalid(faceInvalidM, Math.max(faceGapM, faceInvalidM)); }
+                    catch (Throwable ignore) { }
+                }
                 elapsedSec += runSec;
                 // ★ 原来这里直接 break —— 末段被整段丢掉，正好压在终点上的那个
                 //   「必过打卡点」就永远命中不了。改成夹到末端，并把这最后一拍跑完。
@@ -2840,12 +2890,18 @@ public class Ledao {
                      *
                      * ⚠ 慢走/暂停都不要：用户明确说"之后进行常规跑步"。 */
                     double gapM = 2.0 + rnd.nextDouble() * 18.0;          // 2~20 m
+                    faceGapM = Math.min(rp.length - totalM, gapM);
                     faceInvalidUntilM = Math.min(rp.length, totalM + gapM);
                     faceInvalid = faceInvalidUntilM - totalM > 0.5;
                     log.log(String.format(Locale.US,
-                            "      ★ 跑到 %.0f m（服务端要求 %d m 处刷脸）—— 先**不传照片**，"
-                                    + "按正常配速再跑 %.0f m（这段算无效里程），跑完再传",
-                            totalM, faceMiddleDistance, faceInvalidUntilM - totalM));
+                            "      ★ ① 弹扫脸：跑到 %.0f m（服务端要求 %d m 处）—— 先**不传照片**",
+                            totalM, faceMiddleDistance));
+                    log.log(String.format(Locale.US,
+                            "      ★ ② 无效里程：接着按正常配速再跑 %.0f m（只推路线、不计里程），"
+                                    + "跑完再传", faceInvalidUntilM - totalM));
+                    /* ★ v1.0.42：把「扫脸中」这一步**画到界面上**（用户第 30 轮：
+                     *   「没有弹扫脸 —— 无效里程 —— 上传人脸照片这一过程」）。 */
+                    try { log.onFaceScan(totalM); } catch (Throwable ignore) { }
                 }
 
                 /* ★★★ v1.0.41：那 2~20 m 跑完了 —— **现在**才传照片。
@@ -2854,8 +2910,8 @@ public class Ledao {
                 if (faceInvalid && totalM >= faceInvalidUntilM - 1e-6) {
                     faceInvalid = false;
                     log.log(String.format(Locale.US,
-                            "      ★ 无效里程跑完：%.0f m（路线进度 %.0f m ／ 有效里程 %.0f m）"
-                                    + "—— 这就把照片传上去（type=2）…",
+                            "      ★ ③ 上传照片：无效里程跑完 %.0f m（路线进度 %.0f m ／ 有效里程 %.0f m）"
+                                    + "—— 现在把照片传上去（type=2）…",
                             faceInvalidM, totalM, validM));
                     String mid = runFaceCheck("中途（type=2，真机 599 m 处）", "2");
                     if (mid.length() > 0) {
@@ -2875,6 +2931,12 @@ public class Ledao {
                                     + "\n（继续跑，但收尾可能被判「人脸照片验证不合格」）", true);
                         } catch (Throwable ignore) { }
                     }
+                    /* ★ v1.0.42：把「上传完了」这一步也画到界面上 —— 结论 + 这一场
+                     *   到底少了多少米，用户跑完回头看一眼就明白"无效里程"落在哪。 */
+                    try {
+                        log.onFaceDone(faceInvalidM, lastFaceStatus == 1,
+                                lastFaceStatus, lastFaceInfo);
+                    } catch (Throwable ignore) { }
                     log.log("      ★ 传完了，接着按正常配速跑（这一场有效里程到此少算了 "
                             + String.format(Locale.US, "%.0f", faceInvalidM) + " m）");
                 }
@@ -3028,6 +3090,10 @@ public class Ledao {
              *   「照片晚传的那 2~20 m」，而那一截在轨迹上是**正常跑出来的路**，
              *   不是直连缺口。真出现异常大（比如把冻结跳点搬回来）就当场说出来。 */
             if (invalidM > 0.5) {
+                log.log(String.format(Locale.US,
+                        "      ★ 中段人脸三步走完：① 扫脸（%d m 处）→ ② 无效里程 %.0f m"
+                                + " → ③ 上传照片（%s）", faceMiddleDistance, invalidM,
+                        faceMiddleDone ? (faceOk ? "通过" : "没通过") : "没做"));
                 log.log(String.format(Locale.US,
                         "      ★ 有效里程 %.3f km ／ 路线进度 %.3f km —— 刷脸前那 %.0f m 是"
                                 + "**无效里程**，没有算进去（用户要求：无效就是无效）；"

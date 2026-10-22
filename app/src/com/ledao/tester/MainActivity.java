@@ -2219,6 +2219,9 @@ public class MainActivity extends Activity implements Ledao.Log {
         } else {
             btnRun.setText("▶  开始跑步");
             paintBtn(btnRun, AppPrefs.hex(Q.MINT));         // Q 版：开始 = 薄荷胶囊
+            /* ★ v1.0.42：一场结束 → 人脸卡片 / 小窗记号都收掉（下一场重新开始算） */
+            Alerts.hideBeacon(rootFrame, "face", 0);
+            MiniWindow.noteFace("");
         }
         btnRun.setEnabled(true);
     }
@@ -2398,6 +2401,10 @@ public class MainActivity extends Activity implements Ledao.Log {
         L.termId = "13119";
         // ★ 新的一局开始了 —— 把上一场还没弹的那条错误丢掉，别在开跑时才冒出来
         Alerts.clearPending(this);
+        /* ★ v1.0.42：上一场那张人脸卡片 / 小窗记号也一起清掉 ——
+         *   上一场如果是在"扫脸中"被打断的，卡片会一直挂在屏幕正中。 */
+        Alerts.clearBeacons(rootFrame);
+        MiniWindow.noteFace("");
         setRunBtn(true);
         // ★ 绿框里的目标里程用 %.1f —— 和白框（refreshPlanInfo）显示的位数一致，
         //   两个框里就是一模一样的数字（2026-10-08 用户要求「改成一致的」）。
@@ -4112,6 +4119,80 @@ public class MainActivity extends Activity implements Ledao.Log {
         dst.ui.post(() -> Alerts.flash(dst.rootFrame, text, warn));
     }
 
+    // ==================================================================
+    //  ★★★ v1.0.42（用户第 30 轮）：「弹扫脸 → 无效里程 → 上传照片」
+    //
+    //  用户的原话：
+    //  「第二张是测试数据，没有弹扫脸----无效里程----上传人脸照片这一过程，请做出完善」
+    //
+    //  这句话得说清楚：那三步**协议侧一直是做了的**（v1.0.41 起照片晚传
+    //  2~20 m，那一段只推路线、不计里程），可界面上**一个字都没有** ——
+    //  到点只往日志里写两行，人盯着屏幕也看不出"刚才刷了个脸"。
+    //  于是用户跑完去看步道乐跑那条记录：轨迹是一条完整的正常路线（这正是
+    //  v1.0.41 特意做的，为了不出现直线缺口），里程只少了十几米 ——
+    //  在他的视角里，就等于"这一过程没发生"。
+    //
+    //  所以这里给三步各配一张卡（**同一张卡换字**，不是叠三张）：
+    //      ① 扫脸中…        （到 500 m，照片还没传）
+    //      ② 无效里程 8/13 m（这段只推路线、不计里程）
+    //      ③ ✅ 已上传        （照片传完，接着正常跑）
+    //  走完 3 秒自己淡出；跑完那一场日志里也会再复述一次。
+    // ==================================================================
+
+    /** 中段人脸 ①：到点了，开始「扫脸」（照片还没传） */
+    @Override
+    public void onFaceScan(final double atM) {
+        final MainActivity dst = (LIVE != null) ? LIVE : this;
+        dst.ui.post(() -> {
+            try {
+                Alerts.beacon(dst.rootFrame, "face", String.format(Locale.US,
+                        "📷 人脸核验（%.0f m 处）\n① 扫脸中… 先不传照片\n接着按正常配速继续跑", atM),
+                        false, 0);
+                dst.setStatus(String.format(Locale.US,
+                        "📷 人脸核验：%.0f m 到了 —— 先不传照片，按正常配速再跑 2~20 m（算无效里程）", atM));
+                MiniWindow.noteFace("📷扫脸");
+            } catch (Throwable ignore) { }
+        });
+    }
+
+    /** 中段人脸 ②：正在跑那段无效里程（有效里程不动，路线进度在走） */
+    @Override
+    public void onFaceInvalid(final double doneM, final double gapM) {
+        final MainActivity dst = (LIVE != null) ? LIVE : this;
+        dst.ui.post(() -> {
+            try {
+                Alerts.beacon(dst.rootFrame, "face", String.format(Locale.US,
+                        "📷 人脸核验 · 扫脸中\n② 无效里程 %.0f / %.0f m\n（这段只走路、不记里程）",
+                        doneM, gapM), false, 0);
+                dst.setStatus(String.format(Locale.US,
+                        "⏳ 无效里程 %.0f / %.0f m —— 这一点距离不会算进上报里程", doneM, gapM));
+                MiniWindow.noteFace(String.format(Locale.US, "📷无效%.0fm", doneM));
+            } catch (Throwable ignore) { }
+        });
+    }
+
+    /** 中段人脸 ③：照片传完了 */
+    @Override
+    public void onFaceDone(final double invalidM, final boolean ok, final int status, final String info) {
+        final MainActivity dst = (LIVE != null) ? LIVE : this;
+        dst.ui.post(() -> {
+            try {
+                Alerts.beacon(dst.rootFrame, "face", ok
+                        ? String.format(Locale.US,
+                                "✅ 人脸核验通过 · 照片已上传\n③ 无效里程 %.0f m\n接着按正常配速跑", invalidM)
+                        : String.format(Locale.US,
+                                "⚠ 人脸核验没通过（status=%d）\n③ 无效里程 %.0f m —— 继续跑，收尾可能被判 59",
+                                status, invalidM),
+                        !ok, 3000);
+                dst.setStatus(ok
+                        ? String.format(Locale.US,
+                                "✅ 人脸核验通过 · 照片已上传 —— 本场无效里程 %.0f m，接着正常跑", invalidM)
+                        : "⚠ 人脸核验没通过 —— 继续跑（收尾可能被判「人脸照片验证不合格」）");
+                MiniWindow.noteFace(ok ? "✅人脸" : "⚠人脸");
+            } catch (Throwable ignore) { }
+        });
+    }
+
     /**
      * ★★★ 调试 / 自检入口（2026-10-10 新加的东西都得亲眼看过一遍）。
      *
@@ -4171,6 +4252,10 @@ public class MainActivity extends Activity implements Ledao.Log {
      *   <li>{@code reroute} —— ★ v1.0.33：连着调 3 次「换路线」按钮的那个方法，
      *       把每次的里程 / 打卡点 / 种子打进日志。手机上发不了点击事件，
      *       "按钮到底有没有换出一条新路线"只能这么验。同样不联网、不跑步。</li>
+     *   <li>{@code facemid} —— ★ v1.0.42（用户第 30 轮）：「弹扫脸 → 无效里程 →
+     *       上传照片」这三步按真节奏重放一遍（① 0 s / ② 2.5 s / ③ 6.5 s /
+     *       11 s 收卡片）。这三步真跑时要等 500 m、还得联网 + 会话活着，
+     *       验收时不可能每次等一遍。**不联网、不上传、不碰账号**。</li>
      * </ul>
      */
     private void runSelfTest(String kind) {
@@ -4268,6 +4353,26 @@ public class MainActivity extends Activity implements Ledao.Log {
                             planSeed));
                 }, 1600L * i);
             }
+            return;
+        }
+        if ("facemid".equals(kind)) {
+            /* ★★★ v1.0.42（用户第 30 轮）：「弹扫脸 → 无效里程 → 上传照片」。
+             *
+             *   这三步真跑时要等 500 m（约两分半）、还得联网 + 有活着的会话，
+             *   验收时不可能每次都等一遍。这里把三步按**真节奏**重放一次：
+             *     不联网、不上传、不碰账号 —— 只把界面上那三张卡走一遍。
+             *   用法（电脑上）：
+             *     adb shell am start -n com.ledao.tester/.MainActivity --es selftest facemid
+             *   然后用 screencap 抓三张图（2.5 s / 6.5 s / 9 s 各一张）。 */
+            log("[自检] 中段人脸三步：① 扫脸 → ② 无效里程 → ③ 上传照片（演示值，不联网、不上传）");
+            onFaceScan(500);
+            ui.postDelayed(() -> onFaceInvalid(4, 13), 2500);
+            ui.postDelayed(() -> onFaceDone(13, true, 1, "人脸验证成功！"), 6500);
+            ui.postDelayed(() -> {
+                Alerts.hideBeacon(rootFrame, "face", 0);
+                MiniWindow.noteFace("");
+                log("[自检] 三步走完，卡片已收起");
+            }, 11000);
             return;
         }
         if ("miniwin".equals(kind)) {
