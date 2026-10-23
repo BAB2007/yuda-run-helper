@@ -2440,6 +2440,12 @@ public class Ledao {
             double faceGapStartM = 0;          // 缺口起点（路线位置，米）
             double faceGapEndM = 0;            // 走到这个路线位置就恢复记录（米）
             double faceGapM = 0;               // 收尾时用的「缺口总长」
+            /* ★★★ v1.0.45（用户第 39 轮「扫脸后速度有个加速的过程」）：
+             *   缺口走完之后**不是满速复活**，而是从「刚站稳」的速度一步步加回巡航。
+             *   三个字段都在缺口终点那一拍定下来，之后每一拍 / 每一个采样点都按它算。 */
+            double faceResumeAtSec = 0;        // 缺口终点那一刻的本场秒数（加速从这里开始；0 = 还没到）
+            double faceResumeRampSec = 0;      // 加速持续多久（12~16 秒）
+            double faceResumeMulMin = 1.0;     // 起步速度的倍率（≈0.08~0.12 → 巡航的 1/10 ≈ 0.3 m/s）
             /* ★★★ totalM ／ validM 两个计数器 —— v1.0.41 的口径：
              *
              *   totalM —— **路线进度**：虚拟人此刻站在路线上的哪一点。
@@ -2685,15 +2691,56 @@ public class Ledao {
                 double runSec = intervalSec;      // ★ 无效里程跑完的那一拍会短于 6 秒
                 boolean lastTick = false;
                 double want = speedModel.nextSpeed(elapsedSec, intervalSec, totalTSec);
-                v = speedModel.limitAccel(want, lastV, intervalSec);
-                lastV = v;
-                speedModel.record(v, intervalSec);
+                /* ★★★ v1.0.45（用户第 39 轮「扫脸后速度有个加速的过程」）。
+                 *
+                 * 缺口走完那一拍起，速度**从站立加回巡航** —— 这条斜坡是乘在速度模型
+                 * 外面的（{@link #faceSpeedMul}），因为要按「缺口终点那一刻」对齐：
+                 *   · 缺口期间（人还在走路去扫码）：不乘，照常按配速往前（S9b 那条）
+                 *   · 缺口终点 → 之后 12~16 秒：从 ~0.3 m/s 半余弦爬到巡航
+                 * 半余弦在起点斜率为 0（不是一脚蹬出去），最大斜率约 Δv/(πT/2) ≈ 0.35 m/s²，
+                 * 落在真机自己的加速度量级里（|a| p95 0.09、上限 1.0）。
+                 *
+                 * ★ 只乘「迈步速度」，不乘里程口径：totalM / validM 照旧按米记账，
+                 *   于是缺口长度、有效里程、打卡判定一个都不受影响 —— 变的只是
+                 *   「这一截路花了多久」和轨迹上那些点报的 s。 */
+                double vCruise = speedModel.limitAccel(want, lastV, intervalSec);
+                lastV = vCruise;
+                speedModel.record(vCruise, intervalSec);
+                double faceMul = 1.0;
+                if (faceResumeAtSec > 0) {
+                    faceMul = faceSpeedMul(elapsedSec + intervalSec * 0.5 - faceResumeAtSec,
+                            faceResumeRampSec, faceResumeMulMin);
+                }
+                v = vCruise * faceMul;
                 stepM = v * intervalSec;
                 lastTick = totalM + stepM >= rp.length;
                 if (lastTick) {
                     // 最后一拍：只跑到末端，时长按实际里程折算（避免超跑一段）
                     stepM = Math.max(0, rp.length - totalM);
                     runSec = v > 0.05 ? stepM / v : intervalSec;
+                }
+                /* ★★★ v1.0.45：这一拍正好把缺口走完 —— **就收在缺口终点上**。
+                 *
+                 * 为什么非要把拍切断：加速斜坡是按「缺口终点那一刻」算的，
+                 * 如果让这一拍跨过终点，钉子点（缺口终点那个采样）的时刻就落在
+                 * 终点**之前**，它报出来的 s 还是巡航速度 —— 轨迹上会出现
+                 * 「34 m 的空档之后第一个点就是满速」，加速段等于没做。
+                 * 切断之后这一拍只有那一个钉子点，它的时刻正好等于斜坡起点 → s = 起步速度。
+                 *
+                 * 代价只有一处：这一拍短于 6 秒，而下面 `idleMs` 早就会把这个差额
+                 * 从睡眠里扣掉（v1.0.41 为「无效里程那拍」写的），于是墙上时钟、
+                 * 虚拟时钟、以及 start_time→end_time 仍然自洽。 */
+                if (faceInvalid && faceGapEndM > faceGapStartM + 0.01
+                        && faceGapEndM < rp.length - 0.5
+                        && totalM + stepM >= faceGapEndM - 1e-6) {
+                    double cut = faceGapEndM - totalM;
+                    if (cut > 0.01 && cut < stepM) {
+                        stepM = cut;
+                        runSec = v > 0.05 ? stepM / v : intervalSec;
+                    }
+                    faceResumeAtSec = elapsedSec + runSec;                  // 斜坡起点
+                    faceResumeRampSec = 12.0 + rnd.nextDouble() * 4.0;      // 12~16 秒爬回巡航
+                    faceResumeMulMin = 0.07 + rnd.nextDouble() * 0.05;      // 起步 ≈ 巡航的 1/12~1/8
                 }
                 totalM += stepM;
                 /* ★★★ v1.0.43（用户第 31 轮「我所想要的就是缺口的效果」）：
@@ -2813,8 +2860,18 @@ public class Ledao {
                         gps.step(sig);
                         double pLat = sp[0] + offLatDeg + mToLat(gps.n);
                         double pLon = sp[1] + offLonDeg + mToLon(gps.e, sp[0]);
-                        samples.add(new double[]{pLat, pLon, v, cumV,
-                                vTick / 1000.0 + runSec * frac});
+                        /* ★ v1.0.45：这一点报的 s 按**它自己的时刻**算，不按"这一拍的平均"。
+                         *   缺口终点那个钉子点的时刻正好等于斜坡起点（τ=0），于是它就是
+                         *   起步速度（≈0.3 m/s）；后面每一拍的点再依次爬高，12~16 秒回到巡航。
+                         *   采样间隔本身还是 2.5~3 秒 —— 真机 GPS 就是定时的，
+                         *   慢下来的时候点距自然变密（真机走路段也是这么密的）。 */
+                        double tS = vTick / 1000.0 + runSec * frac;
+                        double sVal = v;
+                        if (faceResumeAtSec > 0) {
+                            sVal = vCruise * faceSpeedMul(tS - faceResumeAtSec,
+                                    faceResumeRampSec, faceResumeMulMin);
+                        }
+                        samples.add(new double[]{pLat, pLon, sVal, cumV, tS});
                         emitted++;
                     }
                     if (emitted > 0)
@@ -2988,6 +3045,17 @@ public class Ledao {
                     log.log(String.format(Locale.US,
                             "      ★ 传完了，接着跑（轨迹上从 %.0f m 处接上，缺口 %.0f m）",
                             faceGapEndM, faceGapM));
+                    /* ★ v1.0.45（用户第 39 轮）：第四步 —— 速度从站立加回巡航。
+                     *  这一步不改路线、不改里程、不改打卡，只改「这一截路花了多久」和
+                     *  轨迹上那些点报的 s。用户要看见的就是这个过程。
+                     *  ⚠ 只有斜坡真的挂上了才报（缺口正好压在路线末端时没有斜坡 ——
+                     *    那时候还报一行"从 x m/s 起步"就是在撒谎）。 */
+                    if (faceResumeAtSec > 0) {
+                        log.log(String.format(Locale.US,
+                                "      ★ ④ 加速：从 %.2f m/s 起步 —— %.0f 秒爬回巡航 %.2f m/s"
+                                        + "（刚站完，脚是一步步迈起来的；这一段点距会自然变密）",
+                                vCruise * faceResumeMulMin, faceResumeRampSec, vCruise));
+                    }
                 }
 
                 // ★★★ 人脸核验 —— 起跑前那次已挪到循环**之前**（见循环外那一段，docs/31）。
@@ -3159,6 +3227,35 @@ public class Ledao {
                         maxSpacing, faceGapM,
                         maxSpacing <= 40.0 ? "同一个量级 ✅"
                                 : "已经超出真机见过的量级 ⚠"));
+                /* ★★★ v1.0.45：加速段**从采样点自己算**，不靠嘴说。
+                 *   这一段是给复盘用的：缺口之后第一个点是不是真的慢、要几个点、
+                 *   多少秒才回到巡航。数字不对就说明斜坡没生效（比如缺口正好压在终点）。 */
+                if (faceResumeAtSec > 0) {
+                    double sFirst = -1, sTop = 0, tBack = -1;
+                    int nSlow = 0, nRamp = 0;
+                    double sCruise = vMid * 0.9;
+                    for (double[] s : samples) {
+                        if (s[4] < faceResumeAtSec - 1e-6) continue;
+                        nRamp++;
+                        if (sFirst < 0) sFirst = s[2];
+                        if (s[2] > sTop) sTop = s[2];
+                        if (s[2] < sCruise) nSlow++;
+                        else if (tBack < 0) tBack = s[4] - faceResumeAtSec;
+                    }
+                    if (nRamp > 0) {
+                        log.log(String.format(Locale.US,
+                                "      ★ 加速段：缺口后第一个点 s=%.2f m/s，%.0f 秒 / %d 个点"
+                                        + "才回到巡航（设计 %.0f 秒；这一段点距比巡航段密，"
+                                        + "因为采样是定时的）",
+                                sFirst, tBack > 0 ? tBack : 0.0, nSlow, faceResumeRampSec));
+                        if (sFirst > 0) {
+                            log.log(String.format(Locale.US,
+                                    "      ★ 加速段的两头：%.2f → %.2f m/s（倍率 %.2f → 1.00）"
+                                            + "—— 「站着扫脸 → 走起来 → 跑起来」这条线在轨迹上看得见",
+                                    sFirst, sTop, faceResumeMulMin));
+                        }
+                    }
+                }
                 if (validM < 2050)
                     log.log(String.format(Locale.US,
                             "      ⚠ 有效里程只有 %.3f km，贴着服务端 2.00 km 的下限 ——"
@@ -4391,6 +4488,32 @@ public class Ledao {
         double dy = (q[0] - p[0]) * 111320.0;
         double dx = (q[1] - p[1]) * 111320.0 * Math.cos(Math.toRadians(p[0]));
         return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    /**
+     * ★★★ v1.0.45：缺口之后的「加速倍率」—— 半余弦，起点斜率为 0。
+     *
+     * <p>用户第 39 轮的原话是「扫脸后速度有个加速的过程」。真机是这样：
+     * 到点站住 → 扫码/举手机（几十秒，GPS 那一段往往正好丢点）→ 走两步 →
+     * 走起来 → 跑起来。所以缺口终点之后的速度不该立刻回到巡航，
+     * 而是一条**从站立爬回巡航**的斜坡。
+     *
+     * <p>为什么用半余弦而不是直线：直线在起点和终点各有一个折角，
+     * 折角在速度序列上就是「加速度突变」—— 真机没有这种东西
+     * （{@code |Δs|} 中位 0.03 m/s、二阶差分中位 0.01）。半余弦两端斜率为 0，
+     * 中间最大斜率 π·(1-mulMin)·v/(2T) ≈ 0.35 m/s²，落在真机自己的量级里。
+     *
+     * @param dt     距离斜坡起点过了多少秒（≤0 = 还没到，按起步速度算）
+     * @param rampSec 斜坡总长（秒）；≤0 表示这一场没有加速段
+     * @param mulMin 起步倍率（0 = 完全静止，1 = 直接巡航）
+     * @return 乘在巡航速度上的倍率，[mulMin, 1]
+     */
+    public static double faceSpeedMul(double dt, double rampSec, double mulMin) {
+        if (rampSec <= 0.1 || mulMin >= 1.0) return 1.0;
+        if (dt <= 0) return mulMin;
+        if (dt >= rampSec) return 1.0;
+        double k = 0.5 - 0.5 * Math.cos(Math.PI * dt / rampSec);
+        return mulMin + (1.0 - mulMin) * k;
     }
 
     private static double round6(double v) { return Math.round(v * 1e6) / 1e6; }
