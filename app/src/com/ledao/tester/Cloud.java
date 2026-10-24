@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.util.Log;
+import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -387,5 +388,53 @@ public final class Cloud {
         boolean on = !statsOn(c);
         setStatsOn(c, on);
         return on;
+    }
+
+    // ==================================================================
+    //  手动检查（v1.0.48 侧栏「检查新版本」）
+    // ==================================================================
+
+    /** 防止连点开出两个检查线程。 */
+    private static volatile boolean checking = false;
+
+    /**
+     * 当场查一次，并且**忽略**「以后再说」的记录 —— 用户主动点的，就该给他答案。
+     *
+     * <p>为什么非要有这个入口：自动检查是静默的。查不到（没网 / 两个源都不通）时
+     * 按设计一个字都不弹，用户只会怀疑"它到底还在不在检查"。手动按一下，
+     * 通不通、有没有新版，当场看得见。
+     *
+     * <p>三种结果都说话：查不到清单 / 已是最新 / 有新版（交给 {@link Updater#prompt}）。
+     */
+    public static void checkNow(final android.app.Activity act) {
+        if (act == null || act.isFinishing() || checking) return;
+        checking = true;
+        final Context app = act.getApplicationContext();
+        final int my = myVer(app);
+        Toast.makeText(app, "正在检查…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            final M m = load(app);
+            try {
+                act.runOnUiThread(() -> {
+                    checking = false;
+                    if (act.isFinishing() || act.isDestroyed()) return;
+                    if (m == null) {
+                        Toast.makeText(act, "查不到更新清单：要么没网，要么 Gitee / GitHub 两个源都不通"
+                                + "（可以点里面那个「去仓库看看」自己下）", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    int st = state(my, m);
+                    if (st == 0) {
+                        Toast.makeText(act, "已是最新：" + (m.name.length() > 0
+                                ? "v" + m.name : "versionCode " + m.ver), Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    Updater.prompt(act, m, st);
+                });
+            } catch (Throwable t) {
+                checking = false;
+                Log.d("ledao", "手动检查出错：" + t);
+            }
+        }, "ledao-check").start();
     }
 }
