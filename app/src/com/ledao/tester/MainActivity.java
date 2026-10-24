@@ -305,6 +305,20 @@ public class MainActivity extends Activity implements Ledao.Log {
         }
         // ★ v1.0.33：小窗「未开跑」那一屏要显示学期目标 / 已完成 —— 进软件顺手问一次
         ui.postDelayed(() -> refreshTermStats("进软件"), 1800);
+
+        /* ★★★ v1.0.47（docs/89）：软件内更新 + 匿名心跳。
+         *
+         *   放在 3 秒之后、后台线程里：清单只有几百字节，但"没网 / Gitee 抽风"
+         *   是常态 —— 拉不到就静默跳过，绝不能在启动路径上等它，也绝不弹错误。
+         *   用户看得见的只有一种情况：**真的出了新版**，那时候才弹窗问一句。
+         *
+         *   心跳和更新检查共用这一次**清单拉取**（清单里的 ping 字段空着就不发心跳，
+         *   等于只有一次 GET）；清单拉不到时两件事一起跳过。
+         *   所以这里只调一个入口。侧栏「📊 匿名统计」可以关掉。 */
+        ui.postDelayed(() -> {
+            if (isFinishing() || isDestroyed()) return;
+            Cloud.onStart(this);
+        }, 3000);
     }
 
     @Override
@@ -1025,6 +1039,32 @@ public class MainActivity extends Activity implements Ledao.Log {
         //   「开发不易，可赏一两块回回本」+ 支付宝收款码（`assets/pay_qr.png`）。
         //   弹窗正文末尾也贴了一张小的（见 DevNote.show），两处用的是同一张图。
         drawerPanel.addView(DevNote.tipBlock(this));
+
+        // ===== ★ v1.0.47（docs/89）匿名统计开关
+        //   为什么要有它：作者要知道"大概多少人在用"只能靠 App 上报，而这件事
+        //   必须让用户看得见、关得掉。上报内容只有三样：一个随机哈希、版本号、
+        //   「打开了 / 跑完了一局」—— 没有设备标识、位置、里程，也没有账号。
+        drawerPanel.addView(section("📊 匿名统计"));
+        final TextView statsTip = new TextView(this);
+        statsTip.setTextSize(11.5f);
+        statsTip.setLineSpacing(dp(2), 1f);
+        final Button statsBtn = drawerBtn("");
+        final Runnable paintStats = () -> {
+            boolean on = Cloud.statsOn(this);
+            statsTip.setText(on
+                    ? "开着：每次打开助手、以及每跑完一局，会发一条极小的消息"
+                    + "（随机哈希 + 版本号 + 事件名）。不上传设备号、位置、轨迹、里程，"
+                    + "也和你的步道乐跑账号无关。"
+                    : "已关闭：以后一个字节都不会发出去（版本检查仍然有效，那只是下载一个文件）。");
+            statsBtn.setText(on ? "关闭匿名统计" : "开启匿名统计（帮作者知道有多少人在用）");
+        };
+        paintStats.run();
+        drawerPanel.addView(statsTip);
+        statsBtn.setOnClickListener(v -> {
+            Cloud.toggleStats(this);
+            paintStats.run();
+        });
+        drawerPanel.addView(statsBtn);
 
         FrameLayout.LayoutParams dlp = new FrameLayout.LayoutParams(
                 drawerW, ViewGroup.LayoutParams.MATCH_PARENT);
@@ -2570,6 +2610,10 @@ public class MainActivity extends Activity implements Ledao.Log {
                 drawPreviewRoute();
                 // ★ v1.0.33：跑完一局「已完成次数」多半 +1 了 —— 顺手把学期次数问回来
                 refreshTermStats("跑完一局");
+                /* ★ v1.0.47（docs/89）：只有**真跑成功**才算"有人在用"。
+                 *   失败 / 手动停止不算 —— 那条数不是活跃度，是事故率。
+                 *   上报走后台线程、用上次缓存里的端点，不额外拉清单。 */
+                if (r.ok) Cloud.onRunDone(this);
             });
             } catch (Throwable t) {
                 /* ★★★ 2026-10-10 用户第 2 条：跑步线程整个挂掉 —— 以前这里**没有 catch**，
