@@ -1040,31 +1040,24 @@ public class MainActivity extends Activity implements Ledao.Log {
         //   弹窗正文末尾也贴了一张小的（见 DevNote.show），两处用的是同一张图。
         drawerPanel.addView(DevNote.tipBlock(this));
 
-        // ===== ★ v1.0.47（docs/89）匿名统计开关
-        //   为什么要有它：作者要知道"大概多少人在用"只能靠 App 上报，而这件事
-        //   必须让用户看得见、关得掉。上报内容只有三样：一个随机哈希、版本号、
-        //   「打开了 / 跑完了一局」—— 没有设备标识、位置、里程，也没有账号。
-        drawerPanel.addView(section("📊 匿名统计"));
-        final TextView statsTip = new TextView(this);
-        statsTip.setTextSize(11.5f);
-        statsTip.setLineSpacing(dp(2), 1f);
-        final Button statsBtn = drawerBtn("");
-        final Runnable paintStats = () -> {
-            boolean on = Cloud.statsOn(this);
-            statsTip.setText(on
-                    ? "开着：每次打开助手、以及每跑完一局，会发一条极小的消息"
-                    + "（随机哈希 + 版本号 + 事件名）。不上传设备号、位置、轨迹、里程，"
-                    + "也和你的步道乐跑账号无关。"
-                    : "已关闭：以后一个字节都不会发出去（版本检查仍然有效，那只是下载一个文件）。");
-            statsBtn.setText(on ? "关闭匿名统计" : "开启匿名统计（帮作者知道有多少人在用）");
-        };
-        paintStats.run();
-        drawerPanel.addView(statsTip);
-        statsBtn.setOnClickListener(v -> {
-            Cloud.toggleStats(this);
-            paintStats.run();
-        });
-        drawerPanel.addView(statsBtn);
+        // ===== ★ v1.0.48：把侧栏那块「匿名统计」换成「检查新版本」
+        //   2026-10-25 用户：「这个统计使用人数先不用了，先搞更新那个方案」。
+        //   上报那条链路（Cloud.ping / 清单里的 ping 字段）留着，但端点是空的 ——
+        //   那侧栏就别再摆一个"帮作者知道有多少人在用"的开关了，摆着等于暗示真的在上报。
+        //   换成手动检查：自动检查是**静默**的，查不到时用户什么都看不见，
+        //   有个按钮才能让"到底通不通、有没有新版"当场有个答案。
+        drawerPanel.addView(section("🔄 更新"));
+        final TextView updTip = new TextView(this);
+        updTip.setTextSize(11.5f);
+        updTip.setLineSpacing(dp(2), 1f);
+        updTip.setText("现在装的是 v" + Updater.verName(this)
+                + "。按一下就去拉一次更新清单（Gitee 优先，拉不到换 GitHub）："
+                + "有新版本会弹窗问你要不要更新；装完还是同一个包名、同一把签名，"
+                + "身份、设置、日志都在，不用重新提取。");
+        drawerPanel.addView(updTip);
+        Button updBtn = drawerBtn("检查新版本");
+        updBtn.setOnClickListener(v -> Cloud.checkNow(this));
+        drawerPanel.addView(updBtn);
 
         FrameLayout.LayoutParams dlp = new FrameLayout.LayoutParams(
                 drawerW, ViewGroup.LayoutParams.MATCH_PARENT);
