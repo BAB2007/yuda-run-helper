@@ -14,11 +14,13 @@ import java.nio.ByteOrder;
  * RouteNet —— 校园路网（预编译），从 {@code assets/routenet.bin} 读进来。
  *
  * <h3>这张图是哪来的</h3>
- * 用户手画的街道笔画（{@code work/draw/graph.json}）经
- * {@code work/route/route_lib.js} 的 {@code buildGraph()} 处理成
+ * 用户在画布上**涂**出来的可行走区域（{@code work/paint/paint.json}），
+ * 经 {@code scripts/mk_paintnet.py} 细化成中线骨架、矢量化成折线，
+ * 再交给 {@code work/route/route_lib.js} 的 {@code buildGraph()} 处理成
  * 「街口 = 节点、街段 = 边」的平面图：笔画求交 → 切边 → 合并街口 →
  * 焊几何 → 嫁接断头路 → 去重边 → 打卡点接到最近的街上。
- * 1683 个街口 / 2871 条街段 / 59.5 km / 单连通。
+ * 规模随涂鸦变：这一版 363 街口 / 433 街段 / 24.1 km / 单连通。
+ * 因为图是长在涂鸦里的，**路线不可能跑出涂鸦**（构造保证，不是事后过滤）。
  *
  * <h3>为什么把建图留在 Node 里，只把结果打进 APK</h3>
  * 建图是整条链上最容易出玄学的一段（求交的 t/u、切边的退化、

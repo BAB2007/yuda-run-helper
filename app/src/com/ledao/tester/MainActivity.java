@@ -88,7 +88,8 @@ public class MainActivity extends Activity implements Ledao.Log {
     private WaterGrid water;
     private RoadGrid roadGrid;
     /**
-     * ★★★ 手画路网：1683 个街口 / 2871 条街段 / 59.5 km，从 assets/routenet.bin 读。
+     * ★★★ 涂鸦路网：363 个街口 / 433 条街段 / 24.1 km，从 assets/routenet.bin 读
+     * （由 work/paint 的涂鸦细化成骨架再建图）。
      * 新版路线规划（work/route/route_lib.js → {@link RoutePlan}）就在这张图上
      * 随机游走。读不到时返回 null，那时自动回落到旧的 {@link RouteGen}。
      */
@@ -2021,7 +2022,7 @@ public class MainActivity extends Activity implements Ledao.Log {
      * ★★★ 2026-10-09：换成新版路线规划（{@link RoutePlan}，即 work/route/route_lib.js
      * 的 Java 移植）。和旧版 {@link RouteGen} 的区别：
      *   旧版在「可跑街道栅格」上 A* 找一条闭环 —— 栅格是 2 m 一格的位图，
-     *   只能保证"压在街道上"；新版在一张**真正的图**（1683 街口 / 2871 街段）
+     *   只能保证"压在街道上"；新版在一张**真正的图**（363 街口 / 433 街段）
      *   上随机游走，于是才有"起点附近几米随机起跑、允许返程、
      *   类似路口抹圆、靠右行驶、横向游走"这些像人的东西，
      *   也才谈得上"随机筛路线但尽量靠近里程下限"。

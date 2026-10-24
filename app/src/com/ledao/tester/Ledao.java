@@ -310,7 +310,7 @@ public class Ledao {
     /** 校园可跑街道栅格（A* 寻路用）。为 null 时回落到旧的样条路线。 */
     public RoadGrid roadGrid = null;
     /**
-     * ★★★ 手画路网（1683 街口 / 2871 街段 / 59.5 km）。
+     * ★★★ 涂鸦生成的路网（363 街口 / 433 街段 / 24.1 km，见 work/paint）。
      *
      * 新版路线规划在它上面随机游走：两段式走法 + 空间自避让 + 靠右/横向游走/转角抹圆。
      * 见 {@link RoutePlan} 的类注释。为 null 时回落到旧的 {@link RouteGen}。
