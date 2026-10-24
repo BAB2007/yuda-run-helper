@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "app": "com.ledao.tester",
+  "ver": 147,
+  "name": "1.0.47",
+  "min": 0,
+  "size": 2154942,
+  "sha256": "e8240a980ba07c2bc02f07dc556f9e5977054118d49f1deda8cc91a6e8c35898",
+  "note": "软件内更新（启动时自动查新版）",
+  "page": "https://github.com/BAB2007/yuda-run-helper",
+  "ping": "",
+  "urls": [
+    "https://raw.githubusercontent.com/BAB2007/yuda-run-helper/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.47.apk",
+    "https://gitee.com/BAB2007/yuda-run-helper/raw/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.47.apk"
+  ]
+}

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.ledao.tester"
-    android:versionCode="146"
-    android:versionName="1.0.46">
+    android:versionCode="147"
+    android:versionName="1.0.47">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -43,6 +43,14 @@
          （息屏那一段它帮不上忙：屏幕黑了窗口不算可见，那一段靠 WAKE_LOCK。）
          没有这条权限时一切降级为 v1.0.30 的行为，功能不受影响。 -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- ★ v1.0.47：软件内更新（docs/89）。
+         用户在自己手机上点「立即更新」之后，助手要把系统安装器叫起来，
+         而这个 App 的 targetSdk 是 28（≥26）⇒ 必须声明这条权限，否则
+         ACTION_VIEW 那个 intent 会被系统直接丢掉，界面上什么都不发生。
+         它只是"允许我发起安装"，真正的开关仍然是用户自己在
+         「允许安装未知应用」里点的那一下 —— 代码里会先查
+         canRequestPackageInstalls()，没开就把那个页面跳出来。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="28" />
 
@@ -91,5 +99,17 @@
                 <action android:name="android.net.VpnService" />
             </intent-filter>
         </service>
+
+        <!-- ★ v1.0.47：把自己下到 cache 里的 APK 交给系统安装器（docs/89）。
+             Android 7.0 起 file:// 一律被 FileUriExposedException 拦下，装 APK
+             必须给 content://；本工程没有 androidx ⇒ 自己写一个 30 行的只读 provider
+             （见 ApkProvider 的类注释）。
+             exported="false" + grantUriPermissions：只有拿到临时授权的安装器能读，
+             别的应用连 authorities 都打不开。authorities 必须与 ApkProvider.AUTH 一致。 -->
+        <provider
+            android:name=".ApkProvider"
+            android:authorities="com.ledao.tester.apk"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>
