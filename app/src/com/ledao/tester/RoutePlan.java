@@ -982,6 +982,22 @@ public class RoutePlan {
         double[] travBias = new double[Math.max(1, seqN)];
         for (int i = 0; i < seqN; i++) travBias[i] = rng.range(0.35, 2.1);
 
+        /* ★ 2026-10-25（用户："只要是上色的都是可以走的地方，不是只有上色的中心能走"）：
+         *   老版本把 off 硬夹在 ±5.5 m，可涂鸦是 20 m 宽的带子 —— 于是他看到的永远
+         *   是一条贴着中线的细线。现在每一步都问一次掩膜「往右能走几米、往左能走几米」
+         *   （{@link RouteNet#clearM}），摆动幅度按净空放大：
+         *     · 净空 9 m 的普通路面 → 摆幅 ~7 m，整条带子都用上
+         *     · 净空 2 m 的窄接驳  → 被压到 1~2 m，不会压出去
+         *     · 打卡点 30 m 以内    → 主动收窄，别把轨迹甩离打卡点
+         *   没有掩膜的旧资源 → 原样退回 ±5.5 m。
+         *   ★ 这段和 work/route/route_lib.js 的 7.4a/7.4b/7.4c 必须逐行对应。 */
+        double CAP_MARGIN = 2.0;    // 离涂鸦边界留这么多米
+        double CAP_MAX = 15.0;      // 再宽的地方最多摆 15 m
+        double RAY_MAX = 18.0;      // 探净空的最远距离
+        double BAND_GAIN = 2.0;     // 摆幅放大
+        double CAP_SLEW = 0.35;     // 每走 1 m，净空最多变多少米（防瞬移）
+        boolean hasMask = G.maskBits != null;
+
         if (o.wander || o.keepRight) {
             double[] cumR = new double[P.n];
             for (int i = 1; i < P.n; i++) cumR[i] = cumR[i - 1] + d2(P.x[i], P.y[i], P.x[i - 1], P.y[i - 1]);
@@ -994,24 +1010,64 @@ public class RoutePlan {
                 travOf[i] = ti2;
                 acc2 += ds;
             }
+
+            // ---- 7.4a 法线 + 左右净空（都从偏移前的位置算） ----
+            double[] nxA = new double[P.n], nyA = new double[P.n];
+            double[] capR = new double[P.n], capL = new double[P.n];
             for (int i = 1; i < P.n - 1; i++) {
-                // 切线必须从**偏移之前**的位置算。在已经偏移过的点上算切线，
-                // 前一个点被推歪 3 m，切线就转 50°，法线跟着转，然后越推越歪 —— 会失控。
                 double pax = s1x[i - 1], pay = s1y[i - 1], pbx = s1x[i + 1], pby = s1y[i + 1];
                 double tx = pbx - pax, ty = pby - pay;
                 double tl = Math.sqrt(tx * tx + ty * ty);
                 if (tl < 1e-9) continue;
                 tx /= tl; ty /= tl;
-                double nx2 = -ty, ny2 = tx;                         // 行进方向的右侧
+                nxA[i] = -ty; nyA[i] = tx;                      // 行进方向的右侧
+                if (!hasMask) continue;
+                double cR = G.clearM(s1x[i], s1y[i], nxA[i], nyA[i], RAY_MAX);
+                double cL = G.clearM(s1x[i], s1y[i], -nxA[i], -nyA[i], RAY_MAX);
+                capR[i] = Math.min(Math.max(0, cR - CAP_MARGIN), CAP_MAX);
+                capL[i] = Math.min(Math.max(0, cL - CAP_MARGIN), CAP_MAX);
+                double dc = Double.MAX_VALUE;
+                for (int k = 0; k < G.nCps; k++) {
+                    double ddx = s1x[i] - G.cpX[k], ddy = s1y[i] - G.cpY[k];
+                    double dq = ddx * ddx + ddy * ddy;
+                    if (dq < dc) dc = dq;
+                }
+                double cg = clamp((Math.sqrt(dc) - 8) / 22, 0, 1);   // 8 m 内 0，30 m 外全开
+                capR[i] *= cg; capL[i] *= cg;
+            }
+
+            // ---- 7.4b 限速：走一格（≈1 m）净空最多变 CAP_SLEW 米 ----
+            if (hasMask && P.n >= 3) {
+                capR[0] = capR[1]; capL[0] = capL[1];
+                capR[P.n - 1] = capR[P.n - 2]; capL[P.n - 1] = capL[P.n - 2];
+                for (int i = 1; i < P.n; i++) {
+                    if (capR[i] > capR[i - 1] + CAP_SLEW) capR[i] = capR[i - 1] + CAP_SLEW;
+                    if (capL[i] > capL[i - 1] + CAP_SLEW) capL[i] = capL[i - 1] + CAP_SLEW;
+                }
+                for (int i = P.n - 2; i >= 0; i--) {
+                    if (capR[i] > capR[i + 1] + CAP_SLEW) capR[i] = capR[i + 1] + CAP_SLEW;
+                    if (capL[i] > capL[i + 1] + CAP_SLEW) capL[i] = capL[i + 1] + CAP_SLEW;
+                }
+            }
+
+            // ---- 7.4c 落点：软饱和（tanh 没有折角，不会「贴着边界走一段直线」） ----
+            for (int i = 1; i < P.n - 1; i++) {
+                if (nxA[i] == 0 && nyA[i] == 0) continue;
                 double off = 0;
                 if (o.keepRight) off += travBias[travOf[i]];
                 if (o.wander) {
                     for (int w2 = 0; w2 < 3; w2++)
                         off += wanderA[w2] * Math.sin(2 * Math.PI * cumR[i] / wanderL[w2] + wanderP[w2]);
                 }
-                off = clamp(off, -5.5, 5.5);
-                P.x[i] = s1x[i] + nx2 * off;
-                P.y[i] = s1y[i] + ny2 * off;
+                if (hasMask) {
+                    double x = off * BAND_GAIN;
+                    off = x > 0 ? capR[i] * Math.tanh(x / Math.max(capR[i], 0.25))
+                                : -capL[i] * Math.tanh(-x / Math.max(capL[i], 0.25));
+                } else {
+                    off = clamp(off, -5.5, 5.5);
+                }
+                P.x[i] = s1x[i] + nxA[i] * off;
+                P.y[i] = s1y[i] + nyA[i] * off;
             }
         }
 
@@ -1024,6 +1080,12 @@ public class RoutePlan {
             }
         }
         // 首点保持不动（起点是"按下开始"的那一下）
+        if (P.n > 0 && full.n > 0) { P.x[0] = full.x[0]; P.y[0] = full.y[0]; }
+
+        /* 7.6 重新等距采样：转角抹圆的参数化 + 横向摆动会让点的间距变得不均匀
+         *     （窗口中间被拉开、两头挤在一起，实测最坏 7 m）。按原样把折线重新切一遍，
+         *     几何一点没变，只是采样点回到 ds 一格 —— 和 route_lib.js 的 7.6 对应。 */
+        P = densifyUniform(P, ds);
         if (P.n > 0 && full.n > 0) { P.x[0] = full.x[0]; P.y[0] = full.y[0]; }
         return P;
     }
