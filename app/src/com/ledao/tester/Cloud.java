@@ -66,8 +66,16 @@ public final class Cloud {
     // ==================================================================
     public static final String[] MANIFEST = {
             "https://gitee.com/BAB2007/yuda-run-helper/raw/main/update.json",
+            "https://cdn.jsdelivr.net/gh/BAB2007/yuda-run-helper@main/update.json",
             "https://raw.githubusercontent.com/BAB2007/yuda-run-helper/main/update.json",
     };
+
+    /**
+     * 应急更新页。清单三个源都拉不到时，让用户自己点进去看 ——
+     * 浏览器能打开不代表 App 的 HttpURLConnection 也能，反过来也一样，
+     * 所以"我们查不到"和"没有新版"必须是两件事，不能都显示成静默。
+     */
+    public static final String PAGE = "https://gitee.com/BAB2007/yuda-run-helper";
 
     /** 哈希盐：换掉它等于换一代统计口径（老 id 全部对不上） —— 别随手改。 */
     public static final String SALT = "ledao-anon-v1";
@@ -81,6 +89,19 @@ public final class Cloud {
     static final String K_SKIP = "upd_skip";     // 用户点过「以后再说」的那一版
     static final String K_CACHE = "upd_cache";   // 上一次成功拉到的清单原文
     static final String K_LASTOK = "upd_last";   // 上次成功的时间（只用于自检日志）
+    static final String K_TRY = "upd_try";       // ★ v1.0.50：上次**尝试**检查的时间（毫秒），节流用
+    static final String K_RES = "upd_res";       // ★ v1.0.50：上次结果 new:149 / same:149 / fail
+    static final String K_WHEN = "upd_when";     // ★ v1.0.50：上次结果的时间（MM-dd HH:mm，给人看）
+
+    /**
+     * ★ v1.0.50：自动检查的最短间隔。
+     *
+     * <p>为什么要有它 —— 用户 2026-10-25 20:44 报「1.0.48 没弹更新到 1.0.49」。
+     * 原因之一：v1.0.48 只在 `onCreate` 后 3 秒查一次，**进程还活着就不会再查**
+     * （从桌面点图标 = onResume，不是 onCreate）。用户装完 1.0.48 后一直没"冷启动"过，
+     * 发 1.0.49 那一刻他进程里的旧清单还是 148 → 什么都不弹，而且没有任何地方能看出来。
+     */
+    public static final long RETRY_GAP_MS = 10 * 60 * 1000L;
 
     // ==================================================================
     //  清单
@@ -163,6 +184,43 @@ public final class Cloud {
         if (m.ver <= myVer) return 0;
         if (m.min > 0 && myVer < m.min) return 2;
         return 1;
+    }
+
+    /**
+     * ★ v1.0.50：这次该不该自动查 —— 距上次**尝试**超过 {@code gapMs} 才查。
+     *
+     * <p>纯函数：时钟由调用方递进来，CloudTest 不需要手机也不需要等 10 分钟。
+     * 从没查过（0）、时钟倒着走（换机改时间）、间隔够 —— 三种都算"该查"。
+     */
+    public static boolean due(long lastMs, long nowMs, long gapMs) {
+        if (lastMs <= 0) return true;
+        if (nowMs <= lastMs) return true;
+        return nowMs - lastMs >= gapMs;
+    }
+
+    /**
+     * ★ v1.0.50：把落盘的结果翻成一句人话（侧栏「上次检查」那一行）。
+     *
+     * <p>三种结果都要说：查到新版 / 已是最新 / 拉不到清单。
+     * 以前只把结果留在 {@code Log.d} 里 —— 用户看到的永远是"什么都没发生"，
+     * 分不清"查了没新版"和"根本查不到"，这正是这次投诉的核心。
+     *
+     * @param res  {@code new:149} / {@code same:149} / {@code fail} / 空（没查过）
+     * @param when {@code MM-dd HH:mm}
+     */
+    public static String describe(String res, String when) {
+        boolean hasWhen = when != null && when.trim().length() > 0;
+        if (res == null || res.trim().length() == 0) return "还没查过";
+        String body;
+        if (res.startsWith("new:")) body = "查到新版 v" + res.substring(4);
+        else if (res.startsWith("same:")) body = "已是最新 v" + res.substring(5);
+        else body = "拉不到清单（三个源都不通）";
+        return hasWhen ? when.trim() + " " + body : body;
+    }
+
+    /** 侧栏那行「上次检查：…」。 */
+    public static String lastLine(Context c) {
+        return describe(sp(c).getString(K_RES, ""), sp(c).getString(K_WHEN, ""));
     }
 
     // ==================================================================
@@ -321,55 +379,140 @@ public final class Cloud {
         }
     }
 
-    /** 拉清单：两个源依次试；全失败就用上次缓存。 */
-    private static M load(Context c) {
+    /**
+     * 拉清单：三个源依次试（Gitee → jsDelivr → GitHub raw）；全失败就用上次缓存。
+     * @param why 非空时往里记"哪个源没成"，只给手动检查那个弹窗看，不进界面主流程
+     */
+    private static M load(Context c, StringBuilder why) {
         for (String u : MANIFEST) {
             String txt = fetch(u);
             M m = parse(txt);
             if (m != null) {
                 sp(c).edit().putString(K_CACHE, m.json())
                         .putString(K_LASTOK, today()).apply();
+                if (why != null) why.append(host(u)).append("✓ ");
                 return m;
             }
+            if (why != null) why.append(host(u)).append("✗ ");
             Log.d("ledao", "清单拉取失败：" + u);
         }
-        return cached(c);
+        M old = cached(c);
+        if (why != null && old != null) why.append("改用缓存 v").append(old.name);
+        return old;
+    }
+
+    /**
+     * 只取 URL 的主机名（日志和弹窗里那一行字，不塞整条地址）。
+     * public 是为了让 {@code work/looptest/CloudTest} 能在没有手机的情况下断言它（纯运算）。
+     */
+    public static String host(String url) {
+        try {
+            int i = url.indexOf("://");
+            String s = i < 0 ? url : url.substring(i + 3);
+            int j = s.indexOf('/');
+            if (j >= 0) s = s.substring(0, j);
+            if (s.startsWith("www.")) s = s.substring(4);
+            return s;
+        } catch (Throwable t) {
+            return "?";
+        }
     }
 
     // ==================================================================
-    //  对外的两个入口
+    //  对外的入口
     // ==================================================================
 
     /**
-     * 启动时调：拉清单 → 上报 start（一天一次）→ 该更新就弹窗。
-     * 全程后台线程，任何一步失败都静默。
+     * 启动时调（onCreate 后 3 秒）。
+     *
+     * @param allowPrompt 正在跑的时候给 false —— 跑一半弹个更新窗会打断这一局；
+     *                    查到什么先落盘记下，等回到前台再问。
      */
-    public static void onStart(final android.app.Activity act) {
+    public static void onStart(final android.app.Activity act, final boolean allowPrompt) {
+        go(act, false, allowPrompt);
+    }
+
+    /**
+     * ★ v1.0.50：回到前台也查一次（按 {@link #RETRY_GAP_MS} 节流）。
+     *
+     * <p>这正是用户 2026-10-25 报的那个现场：装完 v1.0.48 之后一直没"冷启动"过，
+     * 从桌面点图标进来的只是 {@code onResume} —— 而 v1.0.48 只在 onCreate 里查一次，
+     * 发 v1.0.49 那一刻他进程里还是旧清单，于是"发了新版却永远收不到"。
+     */
+    public static void onResume(final android.app.Activity act, final boolean allowPrompt) {
         if (act == null || act.isFinishing()) return;
         final Context app = act.getApplicationContext();
+        if (!due(sp(app).getLong(K_TRY, 0L), System.currentTimeMillis(), RETRY_GAP_MS)) return;
+        go(act, false, allowPrompt);
+    }
+
+    /**
+     * 唯一那条检查链路：拉清单（后台线程）→ 结果落盘（侧栏「上次检查」看得见）
+     * → 该弹就弹。自动和手动走同一条路，省得两边行为不一致。
+     *
+     * @param manual      用户主动点的：三种结果都说话（toast / 弹窗）
+     * @param allowPrompt 自动检查允不允许弹窗（跑步中为 false）
+     */
+    private static void go(final android.app.Activity act, final boolean manual, final boolean allowPrompt) {
+        if (act == null || act.isFinishing() || checking) return;
+        checking = true;
+        final Context app = act.getApplicationContext();
         final int my = myVer(app);
+        if (manual) Toast.makeText(app, "正在检查…", Toast.LENGTH_SHORT).show();
         new Thread(() -> {
+            final StringBuilder why = new StringBuilder();
+            M mm;
             try {
-                final M m = load(app);
-                if (m == null) return;
-                // 心跳：start 一天最多一次（run 那个另算，见 onRunDone）
-                if (m.ping.length() > 0 && statsOn(app)
-                        && !today().equals(sp(app).getString(K_LAST, ""))) {
-                    if (ping(m.ping, app, "start")) {
-                        sp(app).edit().putString(K_LAST, today()).apply();
-                    }
+                mm = load(app, why);
+            } catch (Throwable t) {
+                mm = null;
+                why.append("异常 ").append(t);
+            }
+            final M m = mm;
+            final String detail = why.toString().trim();
+            // 心跳：start 一天最多一次（run 那个另算，见 onRunDone）
+            if (m != null && m.ping.length() > 0 && statsOn(app)
+                    && !today().equals(sp(app).getString(K_LAST, ""))) {
+                if (ping(m.ping, app, "start")) {
+                    sp(app).edit().putString(K_LAST, today()).apply();
                 }
-                final int st = state(my, m);
-                if (st == 0) return;
-                if (st == 1 && sp(app).getInt(K_SKIP, 0) >= m.ver) return;
+            }
+            final long now = System.currentTimeMillis();
+            final String when = new SimpleDateFormat("MM-dd HH:mm", Locale.US).format(new Date(now));
+            // 结果串里带的是**版本名**（1.0.49），不是 versionCode（149）—— 侧栏那行给人看
+            final String nm = m == null ? "" : (m.name.length() > 0 ? m.name : String.valueOf(m.ver));
+            final String res = m == null ? "fail" : (m.ver > my ? "new:" + nm : "same:" + nm);
+            sp(app).edit().putLong(K_TRY, now)
+                    .putString(K_RES, res).putString(K_WHEN, when).apply();
+            final int st = m == null ? 0 : state(my, m);
+            Log.d("ledao", "更新检查 " + res + "（" + detail + "）");
+            try {
                 act.runOnUiThread(() -> {
+                    checking = false;
                     if (act.isFinishing() || act.isDestroyed()) return;
+                    if (manual) {
+                        if (m == null) {
+                            Updater.manualFail(act, detail);
+                            return;
+                        }
+                        if (st == 0) {
+                            Toast.makeText(act, "已是最新：" + (m.name.length() > 0
+                                    ? "v" + m.name : "versionCode " + m.ver), Toast.LENGTH_LONG).show();
+                            return;
+                        }
+                        Updater.prompt(act, m, st);
+                        return;
+                    }
+                    // 自动：不打扰 —— 跑步中、已是最新、用户对这一版点过「以后再说」都不弹
+                    if (st == 0 || !allowPrompt) return;
+                    if (st == 1 && sp(app).getInt(K_SKIP, 0) >= m.ver) return;
                     Updater.prompt(act, m, st);
                 });
             } catch (Throwable t) {
+                checking = false;
                 Log.d("ledao", "更新检查出错：" + t);
             }
-        }, "ledao-cloud").start();
+        }, manual ? "ledao-check" : "ledao-cloud").start();
     }
 
     /**
@@ -394,47 +537,17 @@ public final class Cloud {
     //  手动检查（v1.0.48 侧栏「检查新版本」）
     // ==================================================================
 
-    /** 防止连点开出两个检查线程。 */
+    /** 防止连点开出两个检查线程（自动和手动共用一把锁）。 */
     private static volatile boolean checking = false;
 
     /**
      * 当场查一次，并且**忽略**「以后再说」的记录 —— 用户主动点的，就该给他答案。
      *
-     * <p>为什么非要有这个入口：自动检查是静默的。查不到（没网 / 两个源都不通）时
-     * 按设计一个字都不弹，用户只会怀疑"它到底还在不在检查"。手动按一下，
-     * 通不通、有没有新版，当场看得见。
-     *
-     * <p>三种结果都说话：查不到清单 / 已是最新 / 有新版（交给 {@link Updater#prompt}）。
+     * <p>为什么非要有这个入口：自动检查是静默的。查不到（没网 / 三个源都不通）时
+     * 按设计不打扰用户，用户只会怀疑"它到底还在不在检查"。手动按一下，
+     * 通不通、有没有新版，当场看得见（连"哪个源没通"都给出来）。
      */
     public static void checkNow(final android.app.Activity act) {
-        if (act == null || act.isFinishing() || checking) return;
-        checking = true;
-        final Context app = act.getApplicationContext();
-        final int my = myVer(app);
-        Toast.makeText(app, "正在检查…", Toast.LENGTH_SHORT).show();
-        new Thread(() -> {
-            final M m = load(app);
-            try {
-                act.runOnUiThread(() -> {
-                    checking = false;
-                    if (act.isFinishing() || act.isDestroyed()) return;
-                    if (m == null) {
-                        Toast.makeText(act, "查不到更新清单：要么没网，要么 Gitee / GitHub 两个源都不通"
-                                + "（可以点里面那个「去仓库看看」自己下）", Toast.LENGTH_LONG).show();
-                        return;
-                    }
-                    int st = state(my, m);
-                    if (st == 0) {
-                        Toast.makeText(act, "已是最新：" + (m.name.length() > 0
-                                ? "v" + m.name : "versionCode " + m.ver), Toast.LENGTH_LONG).show();
-                        return;
-                    }
-                    Updater.prompt(act, m, st);
-                });
-            } catch (Throwable t) {
-                checking = false;
-                Log.d("ledao", "手动检查出错：" + t);
-            }
-        }, "ledao-check").start();
+        go(act, true, true);
     }
 }
