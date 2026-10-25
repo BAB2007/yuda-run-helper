@@ -46,8 +46,13 @@ import java.nio.ByteOrder;
 public class RouteNet {
 
     private static final int MAGIC = 0x4E52444C;      // "LDRN"
-    private static final int VERSION = 2;
+    /* v3 = v2 + 涂鸦掩膜。v2 只有「街口 / 街段」，路线只能贴着中心线走；
+     * 可涂鸦是**一片**（20 m 宽的带子里哪都能跑）。v3 把那张栅格也带上，
+     * 见 {@link #inside} / {@link #clearM}。 */
+    private static final int VERSION = 3;
     private static final int HDR = 72;
+    /** 探净空时一步走多远（米）。★ 必须和 work/route/netasset.js 的 CLEAR_STEP 一样 */
+    static final double CLEAR_STEP = 0.8;
 
     public static final double M_PER_DEG_LAT = 111132.0;
 
@@ -71,6 +76,11 @@ public class RouteNet {
     // ---- 经纬度换算 ----
     public final double lonLeft, latTop, lonSpan, latSpan, widthPx, heightPx;
     public final double mx, my;
+
+    // ---- 涂鸦掩膜（v3；null = 这份资源没有掩膜） ----
+    public final int maskW, maskH, maskStride;
+    public final float maskCellM;
+    public final byte[] maskBits;
 
     public final int nNodes, nEdges, nPts, nCps;
 
@@ -156,6 +166,41 @@ public class RouteNet {
             cpId[i] = new String(id, java.nio.charset.Charset.forName("UTF-8"));
         }
         if (n != nCps) throw new IllegalStateException("打卡点数量对不上");
+
+        // ---- 涂鸦掩膜（v3 的尾巴；0x0 = 这份资源没有掩膜） ----
+        int mw = b.getInt(), mh = b.getInt();
+        float mcell = b.getFloat();
+        int mstride = b.getInt();
+        if (mw > 0 && mh > 0 && mstride > 0 && b.remaining() >= mstride * mh) {
+            maskW = mw; maskH = mh; maskStride = mstride; maskCellM = mcell;
+            maskBits = new byte[mstride * mh];
+            b.get(maskBits);
+        } else {
+            maskW = 0; maskH = 0; maskStride = 0; maskCellM = 0f; maskBits = null;
+        }
+    }
+
+    /** (x,y)（米）这一格涂了没有 —— 涂了就是能跑的地方。没有掩膜时恒真。 */
+    public boolean inside(double x, double y) {
+        if (maskBits == null) return true;
+        int cx = (int) Math.floor(x / maskCellM), cy = (int) Math.floor(y / maskCellM);
+        if (cx < 0 || cy < 0 || cx >= maskW || cy >= maskH) return false;
+        return ((maskBits[cy * maskStride + (cx >> 3)] >> (cx & 7)) & 1) != 0;
+    }
+
+    /**
+     * 从 (x,y) 沿 (nx,ny) 这个方向还能走多远（米）—— 一步 {@link #CLEAR_STEP}，
+     * 踩到没涂的格就停。有了它，「往旁边挪几米还在这片涂鸦里」才问得出来。
+     * 没有掩膜时返回 maxM（等于不设限，退回老行为）。
+     */
+    public double clearM(double x, double y, double nx, double ny, double maxM) {
+        if (maskBits == null) return maxM;
+        double t = 0;
+        while (t + CLEAR_STEP <= maxM) {
+            t += CLEAR_STEP;
+            if (!inside(x + nx * t, y + ny * t)) return t - CLEAR_STEP;
+        }
+        return maxM;
     }
 
     /** 某个街口的第 k 条出边连到哪个街口 */
