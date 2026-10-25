@@ -112,6 +112,8 @@ public class MainActivity extends Activity implements Ledao.Log {
      */
     private String identCache = "";
     private TextView tvLog, tvStatus, tvIdentBrief, tvRouteHead, tvRouteInfo, tvTitle, tvAutoInfo;
+    /** ★ v1.0.50：侧栏「🔄 更新」那段正文 —— 每次打开侧栏时按 Cloud.lastLine() 刷一遍 */
+    private TextView updTip;
     private Button btnRun, btnSniff, btnClear, btnProxyHelp, btnCopyLog, btnCa, btnRealId, btnFace, btnMini;
     private Button btnMenu;
     /** 地图卡片的容器 */
@@ -317,7 +319,8 @@ public class MainActivity extends Activity implements Ledao.Log {
          *   所以这里只调一个入口。侧栏「📊 匿名统计」可以关掉。 */
         ui.postDelayed(() -> {
             if (isFinishing() || isDestroyed()) return;
-            Cloud.onStart(this);
+            // ★ v1.0.50：跑步中还弹更新窗会打断这一局 —— 只记结果，等回到前台再问
+            Cloud.onStart(this, !RUN_ACTIVE);
         }, 3000);
     }
 
@@ -352,6 +355,11 @@ public class MainActivity extends Activity implements Ledao.Log {
                 updateSniffBtn();
             }
         }
+        /* ★ v1.0.50：回到前台也查一次更新（Cloud 内部按 10 分钟节流）。
+         *   用户 2026-10-25 报「1.0.48 没显示更新到 1.0.49」，直接原因之一就是
+         *   v1.0.48 只在 onCreate 里查 —— 从桌面点图标进来只是 onResume，
+         *   进程里那份旧清单（148）永远不会被刷新，于是新版发了也收不到。 */
+        Cloud.onResume(this, !RUN_ACTIVE);
     }
 
     @Override
@@ -1047,16 +1055,17 @@ public class MainActivity extends Activity implements Ledao.Log {
         //   换成手动检查：自动检查是**静默**的，查不到时用户什么都看不见，
         //   有个按钮才能让"到底通不通、有没有新版"当场有个答案。
         drawerPanel.addView(section("🔄 更新"));
-        final TextView updTip = new TextView(this);
+        updTip = new TextView(this);
         updTip.setTextSize(11.5f);
         updTip.setLineSpacing(dp(2), 1f);
-        updTip.setText("现在装的是 v" + Updater.verName(this)
-                + "。按一下就去拉一次更新清单（Gitee 优先，拉不到换 GitHub）："
-                + "有新版本会弹窗问你要不要更新；装完还是同一个包名、同一把签名，"
-                + "身份、设置、日志都在，不用重新提取。");
+        updTip.setText(cloudTipText());
         drawerPanel.addView(updTip);
         Button updBtn = drawerBtn("检查新版本");
-        updBtn.setOnClickListener(v -> Cloud.checkNow(this));
+        updBtn.setOnClickListener(v -> {
+            Cloud.checkNow(this);
+            // ★ v1.0.50：查完把上面那行「上次检查」换成新结果（4 秒够走完一次请求）
+            ui.postDelayed(this::refreshUpdTip, 4000);
+        });
         drawerPanel.addView(updBtn);
 
         FrameLayout.LayoutParams dlp = new FrameLayout.LayoutParams(
@@ -1086,11 +1095,33 @@ public class MainActivity extends Activity implements Ledao.Log {
         return b;
     }
 
+    /**
+     * ★ v1.0.50：侧栏「🔄 更新」那段字 —— **现在装的是哪一版 + 上一次检查的结果**。
+     *
+     * <p>为什么要写"上次检查"：v1.0.48 是查不到就完全静默，用户报
+     * 「1.0.48 怎么没显示更新到 1.0.49」时，界面上没有任何东西能区分
+     * "查了、没新版" / "根本没查" / "查了但拉不到清单"。这一行就是为了让这三件事
+     * 长得不一样（结果由 {@link Cloud#lastLine} 落盘后读出来，重启也还在）。
+     */
+    private String cloudTipText() {
+        return "现在装的是 v" + Updater.verName(this)
+                + "\n上次检查：" + Cloud.lastLine(this) + "\n\n"
+                + "打开软件、以及从后台回到软件时都会自动查一次（10 分钟内不重复查）。"
+                + "按下面这颗按钮能当场查：有新版本会弹窗问你要不要更新；"
+                + "装完还是同一个包名、同一把签名 —— 身份、设置、日志都在，不用重新提取。";
+    }
+
+    /** 把上面那段字按最新结果重刷（侧栏打开时、手动查完 4 秒后各一次）。 */
+    private void refreshUpdTip() {
+        if (updTip != null) updTip.setText(cloudTipText());
+    }
+
     private void toggleDrawer() {
         drawerOpen = !drawerOpen;
         if (scrim != null) scrim.setVisibility(drawerOpen ? View.VISIBLE : View.GONE);
         if (drawerHolder == null) return;
         if (drawerOpen) {
+            refreshUpdTip();                   // ★ v1.0.50：打开侧栏就看到最新那次检查
             drawerHolder.setVisibility(View.VISIBLE);
             drawerHolder.setTranslationX(-drawerW);
             drawerHolder.animate().translationX(0).setDuration(200).start();

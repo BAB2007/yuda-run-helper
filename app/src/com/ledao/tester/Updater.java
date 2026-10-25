@@ -109,6 +109,43 @@ public final class Updater {
         }
     }
 
+    /**
+     * ★ v1.0.50：手动检查**查不到清单**时的那一个弹窗。
+     *
+     * <p>以前这里是一句 Toast（"要么没网，要么两个源都不通"），飘一下就没了 ——
+     * 用户 2026-10-25 报"1.0.48 没弹更新"时，我们连他到底是"没网"还是"没有新版"
+     * 都分不清。现在改成：把**每个源通没通**写进正文，再给一个"打开仓库"的出口 ——
+     * 浏览器能开、App 开不了的情况是存在的，那条路不能堵死。
+     *
+     * @param detail 形如 {@code gitee.com✗ cdn.jsdelivr.net✗ raw.githubusercontent.com✗}
+     */
+    public static void manualFail(final Activity act, final String detail) {
+        if (act == null || act.isFinishing() || showing) return;
+        showing = true;
+        String d = (detail == null || detail.trim().length() == 0) ? "（没有更多细节）" : detail.trim();
+        AlertDialog.Builder b = new AlertDialog.Builder(act)
+                .setTitle("查不到更新清单")
+                .setMessage("拉清单的结果：\n" + d
+                        + "\n\n要么手机这会儿没网，要么这几个域名被网络/安全管家拦了。"
+                        + "清单本身很小（不到 1 KB），网络一恢复就会自动再查一次。"
+                        + "\n\n着急的话点「打开仓库」自己下 —— 安装包和更新清单在同一个仓库里。")
+                .setCancelable(true)
+                .setNegativeButton("知道了", (d2, w) -> showing = false)
+                .setOnDismissListener(d2 -> showing = false);
+        try {
+            b.setNeutralButton("打开仓库", (d2, w) -> {
+                showing = false;
+                openUrl(act, Cloud.PAGE);
+            });
+        } catch (Throwable ignore) { }
+        try {
+            b.show();
+        } catch (Throwable t) {
+            showing = false;
+            Log.d("ledao", "更新失败弹窗失败：" + t);
+        }
+    }
+
     // ==================================================================
     //  二、下载
     // ==================================================================
