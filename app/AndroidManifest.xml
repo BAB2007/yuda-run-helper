@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.ledao.tester"
-    android:versionCode="153"
-    android:versionName="1.0.53">
+    android:versionCode="154"
+    android:versionName="1.0.54">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -13,14 +13,12 @@
          Android 14+ 只对高 targetSdk 强制要求；但国产 ROM 自己的省电策略会看
          这个类型，而且哪天抬 targetSdk 就必须有 —— 一次配齐。 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <!-- ★ v1.0.51（用户第 60 轮「息屏依旧可后台刷跑」）：
-         ① ACCESS_WIFI_STATE：拿 WifiLock 用（屏幕一黑 Wi-Fi 就进省电，定位包会被拖慢）；
-         ② REQUEST_IGNORE_BATTERY_OPTIMIZATIONS：申请「电池优化白名单」，
-            Doze 只对不在白名单里的 App 掐网络和唤醒锁。 -->
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- ★★★ v1.0.54（用户第 65 轮「去除息屏继续跑的功能，这个功能有 bug 无法适配多机型」）：
+         WAKE_LOCK / ACCESS_WIFI_STATE / CHANGE_WIFI_STATE /
+         REQUEST_IGNORE_BATTERY_OPTIMIZATIONS 这四条，都是 v1.0.51~v1.0.53
+         「息屏以后继续跑」那一套用的（唤醒锁 + WifiLock + 电池优化白名单），
+         已随功能整体删除 —— 用不上的权限就别声明。
+         现在跑步期间靠 FLAG_KEEP_SCREEN_ON 把屏幕锁住，**不需要任何权限**。 -->
     <!-- 跑步前把后台的步道乐跑进程干掉。
          否则它会在跑步中途自己刷新令牌（单会话），把我们的令牌顶掉 →
          后半程全返回 102「该账号已在其他手机登录」，OSS 凭证拿不到，整趟白跑。
@@ -38,16 +36,17 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- ★ v1.0.25 曾经在这里声明过「忽略电池优化」那条权限（首页那行
          「🔋 后台运行设置」用来申请 AOSP 那层白名单）。★ v1.0.33 用户把那块整个
-         删掉了（docs/65：后台这件事交给迷你小窗），没人再申请它 ——
-         用不上的权限就别声明，一并撤掉。真机实测那份 AOSP 白名单国产 ROM 也不看
-         （docs/62：进程照样被冻），真正的开关是系统自己的「自启动 / 后台活动」，
-         入口在「🪟 迷你小窗」向导第 ④ 步。 -->
+         删掉了（docs/65：后台这件事交给迷你小窗），★ v1.0.51 又为了「息屏继续跑」
+         加回来，★ v1.0.54 随那个功能一并删除。真机实测那份 AOSP 白名单国产 ROM
+         也不看（docs/62：进程照样被冻）。真正的开关是系统自己的「自启动 /
+         后台活动」，入口在「🪟 迷你小窗」向导第 ④ 步。 -->
     <!-- ★★★ v1.0.32（docs/64）：迷你小窗 —— 切走时把自己缩成右上角一个可见的小窗。
          为什么它比"求系统别冻我"更管用：国产 ROM 的省电策略会冻前台服务（v1.0.30
          真机上量到过：进程被冻、通知还挂着），但只要进程**有可见窗口**，
          它在系统眼里就不是"可以冻结的后台"。这条权限是 Android 6 起就有的标准项，
          不需要 root、不需要各家白名单 —— 用户点一次「显示在其他应用上层」即可。
-         （息屏那一段它帮不上忙：屏幕黑了窗口不算可见，那一段靠 WAKE_LOCK。）
+         ★ v1.0.54：跑步期间屏幕是锁住不灭的（FLAG_KEEP_SCREEN_ON），所以正常跑步
+         不会走到"屏幕黑着"这一态；这一层兜住的是"切走以后"。
          没有这条权限时一切降级为 v1.0.30 的行为，功能不受影响。 -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- ★ v1.0.47：软件内更新（docs/89）。

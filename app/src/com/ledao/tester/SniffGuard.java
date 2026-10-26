@@ -11,21 +11,20 @@ import android.os.Build;
 import android.os.IBinder;
 
 /**
- * 抓包守护前台服务 + 跑步期间的**保命与保活**。
+ * 抓包守护前台服务 + 跑步期间的**进程优先级**。
  *
- * <p>目的有两个：
- * <ol>
- *   <li>把本进程提到「前台服务」优先级，这样切到步道乐跑去跑步时，
- *       MIUI 不会因为我们退到后台而把进程杀掉。
- *       进程一死，LocalProxy 的监听就没了，但系统代理还指着 127.0.0.1:8899，
- *       步道乐跑会直接「服务器开小差」—— 那一次跑步就白跑了。</li>
- *   <li>★ v1.0.25：跑步期间再持一个 {@code PARTIAL_WAKE_LOCK}
- *       —— 前台服务只保证"进程不被杀"，**不保证 CPU 不睡**。
- *       少了这把锁，息屏后系统随时可以把 CPU 挂起：每一拍的间隔会被拉长
- *       （{@code Thread.sleep} 在挂起期间不走），而配速是按墙上时钟算的，
- *       服务端又卡着 3:00~8:00 分/公里 —— 拖长了就可能被判「配速超限」。
- *       见 docs/59。</li>
- * </ol>
+ * <p>目的只有一个：把本进程提到「前台服务」优先级，这样切到步道乐跑去抓身份、
+ * 或者跑步中途切到别的应用时，系统不会因为我们退到后台就把进程清掉。
+ * 进程一死，LocalProxy 的监听就没了，但系统代理还指着 127.0.0.1:8899，
+ * 步道乐跑会直接「服务器开小差」—— 那一次跑步就白跑了。
+ *
+ * <p>★★★ v1.0.54（用户第 65 轮「去除息屏继续跑的功能」）：这里原来还持一把
+ * {@code PARTIAL_WAKE_LOCK}（v1.0.25）和一个 {@code WifiLock}（v1.0.51），
+ * 为的是"屏幕灭了以后进程照样被调度"。用户点名删了：那套东西成不成取决于
+ * 每台 ROM 的省电策略，无法适配多机型。现在改成**跑步期间锁住屏幕**
+ * （{@code FLAG_KEEP_SCREEN_ON}，见 MainActivity#setRunScreenOn）——
+ * 屏幕根本不灭，也就不需要唤醒锁；这条服务只管"进程别被清"。
+ * 所以本类**不再申请任何唤醒锁**，manifest 里的 WAKE_LOCK 权限也一并撤掉了。
  *
  * 代理本体仍然跑在 MainActivity 里（Activity 切后台只是 onStop，不会 onDestroy，
  * 所以那根线程还活着）。这里只负责保命。
@@ -46,9 +45,6 @@ public class SniffGuard extends Service {
 
     /** 通知正文 */
     private static volatile String notiText = "抓包进行中，跑步期间请勿关闭本应用";
-
-    /** 跑步期间的唤醒锁（PARTIAL_WAKE_LOCK 不会点亮屏幕，只是不让 CPU 睡） */
-    private static android.os.PowerManager.WakeLock wake = null;
 
     @Override
     public void onCreate() {
@@ -74,7 +70,7 @@ public class SniffGuard extends Service {
              *   而日志里一个字都没有，谁也没法查。现在至少留下可查的痕迹。 */
             android.util.Log.e("LedaoTester", "[后台] ❌ 前台服务没起来：" + t);
             RunLog.append("[后台] ❌ 前台服务没起来（" + t + "）—— "
-                    + "没有它，切走 / 息屏后系统随时可能把助手冻住；"
+                    + "没有它，切走以后系统随时可能把助手冻住；"
                     + "到首页把「🪟 迷你小窗」开上，能顶很大一部分");
         }
         return START_STICKY;
@@ -95,127 +91,14 @@ public class SniffGuard extends Service {
         super.onTaskRemoved(rootIntent);
     }
 
-    // ==================================================================
-    //  唤醒锁：跑步期间别让 CPU 睡（v1.0.25）
-    // ==================================================================
-
     /**
-     * 持住唤醒锁。
-     *
-     * @param ms 兜底超时 —— 万一某条路径忘了释放，最多也就耗这么久（跑步一场撑死 30 分钟），
-     *           不会变成一个永远拿着的漏电锁。
-     */
-    public static synchronized void holdAwake(Context c, long ms) {
-        try {
-            if (c != null) ctx = c.getApplicationContext();
-            if (wake == null) {
-                if (ctx == null) return;
-                android.os.PowerManager pm = (android.os.PowerManager)
-                        ctx.getSystemService(Context.POWER_SERVICE);
-                if (pm == null) return;
-                wake = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "ledao:run");
-                wake.setReferenceCounted(false);   // 重复 acquire 不需要重复 release
-            }
-            if (!wake.isHeld()) wake.acquire(ms);
-            else wake.acquire(ms);                 // 已持有：这一下等于把兜底超时往后推
-        } catch (Throwable ignore) {
-            /* 拿不到就算了：跑步照跑，只是息屏后节拍可能被拉长 */
-        }
-    }
-
-    /** 放掉唤醒锁（跑步结束 / 出错退出都要调） */
-    public static synchronized void dropAwake() {
-        try {
-            if (wake != null && wake.isHeld()) wake.release();
-        } catch (Throwable ignore) { }
-    }
-
-    /**
-     * ★★★ v1.0.30（docs/62）：把唤醒锁的兜底超时**往后推**。
-     *
-     * <p>{@link #holdAwake} 只 acquire 一次（45 分钟兜底）。被系统冻过的场次里，
-     * 墙上时钟会走得比模拟时长多得多（冻 20 分钟就有 20 分钟是"白等"），
-     * 45 分钟可能不够 —— 跑步循环每隔几分钟续一下，长跑/被冻久了也不会半路掉锁。
-     *
-     * <p>没持有时只是重新 acquire；已经持有时（引用计数已关）等于重设超时。
-     */
-    public static synchronized void keepAwake() {
-        if (ctx == null) return;
-        holdAwake(ctx, 45L * 60 * 1000);
-    }
-
-    /** 拿住唤醒锁时顺手记住 application context，好让 {@link #keepAwake()} 能续 */
-    private static Context ctx = null;
-
-    /** 现在拿着这把锁吗（自检和日志用） */
-    public static synchronized boolean awake() {
-        try {
-            return wake != null && wake.isHeld();
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
-    // ==================================================================
-    //  网络锁：息屏以后 Wi-Fi 别省电省到断流（★ v1.0.51）
-    // ==================================================================
-
-    /**
-     * ★★★ v1.0.51（用户第 60 轮：「能不能添加息屏依旧可后台刷跑的功能」）。
-     *
-     * <p>唤醒锁只保证 **CPU** 不睡，管不了 Wi-Fi。屏幕一黑，绝大多数机器会让
-     * Wi-Fi 进省电（DTIM 拉长、部分批次丢包）。这一场跑步每隔几秒就要发一个定位包，
-     * 一旦那几秒正好卡在省电窗口里，请求就会变慢甚至失败 —— 表现出来就是
-     * 「息屏以后那一场走得特别慢、配速被拖坏」。
-     *
-     * <p>{@code WIFI_MODE_FULL_HIGH_PERF} 就是告诉系统"这台机器这会儿在等网络，
-     * 别省电"。它不点亮屏幕、也不影响耗电统计里那条"前台服务"。
-     *
-     * <p>拿不到就算了（没有 Wi-Fi 硬件 / 系统拒绝）：跑步照跑，只是回到老样子。
-     */
-    public static synchronized void holdWifi(Context c) {
-        try {
-            if (c != null) ctx = c.getApplicationContext();
-            if (wifiLock == null) {
-                if (ctx == null) return;
-                android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager)
-                        ctx.getSystemService(Context.WIFI_SERVICE);
-                if (wm == null) return;
-                wifiLock = wm.createWifiLock(
-                        android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "ledao:wifi");
-                wifiLock.setReferenceCounted(false);   // 重复 acquire 不需要配平 release
-            }
-            if (!wifiLock.isHeld()) wifiLock.acquire();
-        } catch (Throwable ignore) {
-            /* 拿不到就算了：跑步照跑，只是息屏后网络可能被省电策略拖慢 */
-        }
-    }
-
-    /** 放掉网络锁（跑步结束 / 出错退出都要调） */
-    public static synchronized void dropWifi() {
-        try {
-            if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
-        } catch (Throwable ignore) { }
-    }
-
-    /** 现在拿着网络锁吗（自检和日志用） */
-    public static synchronized boolean wifiHeld() {
-        try {
-            return wifiLock != null && wifiLock.isHeld();
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
-    private static android.net.wifi.WifiManager.WifiLock wifiLock = null;
-
-    /**
-     * ★ v1.0.25：改常驻通知里那句话（跑步期间显示进度，息屏/切走时用户下拉就能看）。
+     * ★ v1.0.25：改常驻通知里那句话（跑步期间显示进度，切走时用户下拉就能看）。
      * 服务还活着才会真的刷；没活着时只记下来，下次 {@link #start} 时用上。
      */
     public static void setText(Context c, String text) {
         notiText = (text == null || text.length() == 0)
-                ? (runMode ? "跑步进行中 —— 可以息屏、可以切到别的应用" : "抓包进行中，跑步期间请勿关闭本应用")
+                ? (runMode ? "跑步进行中 —— 请让屏幕保持亮着，别退出助手"
+                           : "抓包进行中，跑步期间请勿关闭本应用")
                 : text;
         SniffGuard s = inst;
         if (s != null) {
