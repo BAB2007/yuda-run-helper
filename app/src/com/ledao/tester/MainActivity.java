@@ -1442,6 +1442,83 @@ public class MainActivity extends Activity implements Ledao.Log {
         }
     }
 
+    /** 「已经问过要不要允许后台运行」——一台机器只问一次（★ v1.0.52） */
+    private static final String K_ASKED_DOZE = "asked_doze";
+
+    /**
+     * 跳到系统那张「是否允许在后台运行 / 忽略电池优化」的询问页。
+     *
+     * <p>★ v1.0.52：从「🪟 迷你小窗」向导第 ⑤ 步里抽出来 —— 开跑前那张
+     * 提醒卡片和向导里那颗键走的是同一条路，不能有两份实现。
+     */
+    private void requestIgnoreBatteryOpt() {
+        try {
+            Intent i = new Intent(
+                    android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+            i.setData(Uri.parse("package:" + getPackageName()));
+            startActivity(i);
+            log("[息屏] 已打开系统的「电池优化」询问页 —— 选「允许」，"
+                    + "息屏后 Doze 就不会掐掉我们的网络和唤醒锁。");
+        } catch (Throwable t) {
+            try {
+                startActivity(new Intent(
+                        android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+                log("[息屏] 这台机器不支持直接跳询问页，已打开「电池优化」列表 ——"
+                        + "找到助手，改成「不限制 / 不优化」。");
+            } catch (Throwable t2) {
+                Toast.makeText(this, "这台机器打不开电池优化页面，去系统设置里自己找一下",
+                        Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    /**
+     * ★★★ v1.0.52（用户第 61 轮「息屏继续跑没成功」）：开跑后问一次
+     * 「要不要允许助手在后台运行」。
+     *
+     * <h3>为什么补这一张卡</h3>
+     * 2026-10-26 在用户自己那台 MI 8（Android 10 / MIUI 12.5）上查到的事实：
+     * 这台机器**从来没进过电池优化白名单** —— 10-23 那场跑起来时日志里就写着
+     * 「白名单：还没加 ❌」。而 Doze 掐网络/掐唤醒锁正是"息屏以后就不动了"
+     * 最常见的入口。v1.0.51 把开关放进了「🪟 迷你小窗」向导第 ⑤ 步，
+     * 可**不点开向导的人永远看不到它** —— 那等于没做。
+     *
+     * <h3>为什么不拦住跑步</h3>
+     * 问就跑（卡片浮在上面，这一场已经在跑了）。点「先这么跑」也照跑，
+     * 只是这一场仍然可能被系统掐 —— 这是用户自己的选择，日志里会如实写。
+     *
+     * <h3>为什么只问一次</h3>
+     * 问过就记住。已经允许过的机器一次都不会看到它；
+     * 拒绝过的机器不再烦，但每次开跑的日志里「白名单：还没加 ❌」照旧写着。
+     */
+    private void askAllowBackgroundOnce() {
+        if (ignoringBatteryOpt()) return;
+        try {
+            if (AppPrefs.sp(this).getBoolean(K_ASKED_DOZE, false)) return;
+            AppPrefs.sp(this).edit().putBoolean(K_ASKED_DOZE, true).apply();
+        } catch (Throwable ignore) { }
+        if (isFinishing() || dead) return;
+        try {
+            android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(this)
+                    .setTitle("还差一步：允许助手在后台跑")
+                    .setMessage("这台手机还没把助手放进「电池优化白名单」。\n"
+                            + "息屏以后，系统会掐掉它的网络和唤醒锁 —— 表现出来就是"
+                            + "「跑着跑着停了」或者「配速被拖得很慢」。\n\n"
+                            + "点「现在去允许」，系统会弹一次询问，选「允许」就行。\n"
+                            + "（只问这一次；国产 ROM 另外那层「自启动 / 省电策略」"
+                            + "在「🪟 迷你小窗」向导第 ④ 步）")
+                    .setPositiveButton("现在去允许", (d, w) -> requestIgnoreBatteryOpt())
+                    .setNegativeButton("先这么跑", (d, w) ->
+                            log("[息屏] 这次没允许后台运行 —— 息屏以后可能被系统掐；"
+                                    + "想补上：🪟 迷你小窗 → 第 ⑤ 步"))
+                    .create();
+            dlg.show();
+            Q.style(this, dlg);
+        } catch (Throwable t) {
+            log("[息屏] 提醒卡片没弹出来（不影响跑步）：" + Err.one(t));
+        }
+    }
+
     // ==================================================================
     //  息屏记录（★ v1.0.51）
     // ==================================================================
@@ -1480,8 +1557,9 @@ public class MainActivity extends Activity implements Ledao.Log {
                     if (android.content.Intent.ACTION_SCREEN_OFF.equals(a)) {
                         screenOffTimes++;
                         screenOffAt = System.currentTimeMillis();
-                        if (RUN_ACTIVE) {
-                            log("🌙 屏幕灭了（息屏）—— 跑步继续：唤醒锁="
+                        /* ★ v1.0.52：自检期间也要记 —— 自检测的正是"息屏了还动没动" */
+                        if (RUN_ACTIVE || SB_ON) {
+                            log("🌙 屏幕灭了（息屏）—— " + (RUN_ACTIVE ? "跑步" : "自检") + "继续：唤醒锁="
                                     + (SniffGuard.awake() ? "持" : "没持")
                                     + " 网络锁=" + (SniffGuard.wifiHeld() ? "持" : "没持")
                                     + " 前台服务=" + (SniffGuard.alive ? "在" : "不在"));
@@ -1491,8 +1569,9 @@ public class MainActivity extends Activity implements Ledao.Log {
                             long d = Math.max(0L, System.currentTimeMillis() - screenOffAt);
                             screenOffTotalMs += d;
                             screenOffAt = 0L;
-                            if (RUN_ACTIVE) {
-                                log("☀ 屏幕亮了（这一觉 " + (d / 1000) + " 秒，跑步继续）");
+                            if (RUN_ACTIVE || SB_ON) {
+                                log("☀ 屏幕亮了（这一觉 " + (d / 1000) + " 秒，"
+                                        + (RUN_ACTIVE ? "跑步" : "自检") + "继续）");
                             }
                         }
                     }
@@ -1610,28 +1689,31 @@ public class MainActivity extends Activity implements Ledao.Log {
                             Toast.LENGTH_LONG).show();
                     return;
                 }
-                try {
-                    Intent i = new Intent(
-                            android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
-                    i.setData(Uri.parse("package:" + getPackageName()));
-                    startActivity(i);
-                    log("[息屏] 已打开系统的「电池优化」询问页 —— 选「允许」，"
-                            + "息屏后 Doze 就不会掐掉我们的网络和唤醒锁。");
-                } catch (Throwable t) {
-                    try {
-                        startActivity(new Intent(
-                                android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
-                        log("[息屏] 这台机器不支持直接跳询问页，已打开「电池优化」列表 ——"
-                                + "找到助手，改成「不限制 / 不优化」。");
-                    } catch (Throwable t2) {
-                        Toast.makeText(this, "这台机器打不开电池优化页面，去系统设置里自己找一下",
-                                Toast.LENGTH_LONG).show();
-                    }
-                }
+                /* ★ v1.0.52：这段跳转抽成了 requestIgnoreBatteryOpt() ——
+                 *   开跑后那张提醒卡片走的是同一条路。 */
+                requestIgnoreBatteryOpt();
             });
             box.addView(bDoze);
 
-            Button b4 = qBtnWide("⑥ 把状态写进日志（再点「📋 复制日志」发我）", Q.SKY, 12.5f);
+            /* ★★★ v1.0.52（用户第 61 轮）：**自己就能测一次息屏**。
+             *   真跑一场要令牌、要十几分钟、还在服务端留一条记录；
+             *   这里只复刻最要紧的两件事（6 秒一拍 + 握一次 443），
+             *   熄屏放三分钟回来看结论 —— 不花跑步次数。 */
+            Button bSleep = qBtnWide("⑥ 测一下「息屏还在跑吗」（3 分钟，不花跑步次数）",
+                    Q.SKY, 12.5f);
+            bSleep.setOnClickListener(v -> {
+                if (RUN_ACTIVE) {
+                    Toast.makeText(this, "正在真跑 —— 真跑本来就会把「冻住 N 秒」写进日志",
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+                sleepBgStart();
+                Toast.makeText(this, "现在按电源键熄屏，放 3 分钟；亮屏后回看这几行"
+                        + "（点「📋 复制日志」能发我）", Toast.LENGTH_LONG).show();
+            });
+            box.addView(bSleep);
+
+            Button b4 = qBtnWide("⑦ 把状态写进日志（再点「📋 复制日志」发我）", Q.SKY, 12.5f);
             b4.setOnClickListener(v -> {
                 log("[小窗] ── 状态快照 ──");
                 log("   " + MiniWindow.statusLine(this));
@@ -2840,6 +2922,10 @@ public class MainActivity extends Activity implements Ledao.Log {
         }, "ledao-run");
         RUN_WORKER = worker;
         worker.start();
+        /* ★ v1.0.52：开跑之后**再**问「要不要允许后台运行」——
+         *   问在起跑前会挡着起跑那几下（人脸 / 登记 / 第一拍），问在起跑后
+         *   只是浮一张卡片，这一场已经在跑了，答不答都不影响。 */
+        ui.postDelayed(this::askAllowBackgroundOnce, 1800);
     }
 
     private String lastPrepareError = "";
@@ -4165,7 +4251,9 @@ public class MainActivity extends Activity implements Ledao.Log {
          *   现在上传的那份改由 Ledao 只写**中性行**（见 AppLog 类注释），
          *   界面日志只留在本地：logcat 与 files/run.log。
          *   ⚠ 这个文件里连"AppLog"这三个字都不该再跟一次 add。 */
-        if (persist && RUN_ACTIVE) RunLog.append(line);
+        /* ★ v1.0.52：自检那条路也要落盘 —— 它测的就是"进程会不会被清掉"，
+         *   被清掉了界面日志就没了，磁盘那份才是证据。 */
+        if (persist && (RUN_ACTIVE || SB_ON)) RunLog.append(line);
         // ★ 打到「当前活着的 Activity」上。Activity 可能被重建，
         //   旧跑步线程如果往已销毁的实例上打日志，用户就"看不见"了。
         final MainActivity dst = (LIVE != null) ? LIVE : this;
@@ -4420,6 +4508,201 @@ public class MainActivity extends Activity implements Ledao.Log {
         });
     }
 
+    // ==================================================================
+    //  息屏后台自检（★ v1.0.52）
+    // ==================================================================
+    /*
+     * 为什么要有这个东西（用户第 61 轮：「息屏继续跑没成功」）
+     * ---------------------------------------------------------------
+     * 在这之前，"息屏以后后台到底还在不在跑"只有两个证据：跑完日志里那行
+     * 「冻结 0 次」，和用户自己的体感。两个都不硬 ——
+     *   · 体感分不清"被冻了"和"网络慢"；
+     *   · 「冻结 0 次」只在真跑完一场之后才有，而真跑要令牌、要十几分钟、
+     *     还会在服务端留一条记录。验一次太贵，于是每次都得赌。
+     *
+     * 这里把同一件事拆成**能反复测、不用花任何代价**的两半：
+     *   ① 墙钟：每 6 秒记一次时间戳。超时 = 这一段时间里进程整段没被调度
+     *      （Doze / 应用速冻 / 省电策略，全都长这个样子）；
+     *   ② 网络：每拍握一次 api2:443 然后立刻断。连不上 / 握很久 = 网络被掐。
+     * 两件事分开报，是因为它们的修法完全不同：①要放自启动/省电策略，
+     * ②只要把「电池优化」白名单加上。
+     */
+
+    /** 自检在不在跑。静态是故意的：界面被划掉 / 重建，这个循环还得继续记。 */
+    private static volatile boolean SB_ON = false;
+
+    /** 到点自己收尾 —— 忘了叫停也不会一直耗电 */
+    private static final long SB_MAX_MS = 15L * 60 * 1000;
+
+    /** 和跑步同一档节拍（跑步每 6 秒发一个定位包，自检就每 6 秒验一次"还醒着吗"） */
+    private static final long SB_TICK_MS = 6000L;
+
+    /**
+     * 超过这个数就算"整段没被调度"。
+     *
+     * <p>口径和真跑那边一致 —— {@link Freeze#MIN_MS} 是 2 秒，这里留 0.5 秒余量；
+     * 正常的 {@code Thread.sleep} 抖动是几十毫秒，离这个数差两个数量级。
+     */
+    private static final long SB_STALL_MS = 2500L;
+
+    private volatile int sbTicks = 0;
+    private volatile long sbMaxOver = 0;
+    private volatile int sbStalls = 0;
+    private volatile int sbNetFail = 0;
+    private volatile long sbNetMax = 0;
+    private volatile long sbT0 = 0;
+    private volatile boolean sbStopping = false;
+
+    private void sleepBgStart() {
+        if (SB_ON) {
+            log("[息屏自检] 已经在跑了 —— 先 --es selftest sleepbgstop 收尾，再重新开始");
+            return;
+        }
+        if (RUN_ACTIVE) {
+            log("[息屏自检] 正在真跑 —— 真跑本来就会把「冻住 N 秒」写进日志，别叠加");
+            return;
+        }
+        SB_ON = true;
+        sbStopping = false;
+        sbTicks = 0;
+        sbMaxOver = 0;
+        sbStalls = 0;
+        sbNetFail = 0;
+        sbNetMax = 0;
+        sbT0 = System.currentTimeMillis();
+        screenWatchReset();
+        log("");
+        log("========== 息屏后台自检 ==========");
+        log("[息屏自检] 只做「真跑」最要紧的那两件事：");
+        log("[息屏自检]   ① 每 6 秒记一次墙钟 —— 超时 = 那一段整段没被调度");
+        log("[息屏自检]   ② 每拍握一次 api2.lptiyu.com:443 —— 连不上 = 网络被掐");
+        log("[息屏自检] 现在按电源键熄屏，放 3~5 分钟，亮屏后回来看这些行。");
+        log("[息屏自检] 收尾：再发一次 --es selftest sleepbgstop（15 分钟也会自己收）");
+        try {
+            if (!SniffGuard.alive) SniffGuard.start(this);
+            SniffGuard.runMode = true;
+            SniffGuard.holdAwake(this, SB_MAX_MS + 60_000L);
+            SniffGuard.holdWifi(this);
+            SniffGuard.setText(this, "息屏自检启动中…");
+        } catch (Throwable t) {
+            log("[息屏自检] 锁没挂全（照样往下测）：" + Err.one(t));
+        }
+        /* ★ 日志必须落盘：自检要测的恰恰是"进程会不会被清掉"，
+         *   真被清掉了，logcat 还在，可界面上的日志框没了 —— 磁盘那份才是证据。 */
+        try {
+            RunLog.start(getFilesDir(), "[息屏自检] " + new SimpleDateFormat(
+                    "yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date()));
+        } catch (Throwable ignore) { }
+        log("[息屏自检] 锁：唤醒锁=" + (SniffGuard.awake() ? "持 ✅" : "没持 ❌")
+                + "　网络锁=" + (SniffGuard.wifiHeld() ? "持 ✅" : "没持 ❌"));
+        log("[息屏自检] 电池优化白名单：" + (ignoringBatteryOpt() ? "已加 ✅" : "没加 ❌")
+                + "　机型 " + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL
+                + " / Android " + android.os.Build.VERSION.RELEASE);
+        new Thread(this::sleepBgLoop, "selftest-sleepbg").start();
+    }
+
+    private void sleepBgLoop() {
+        /* ★ 前台服务是**异步**起的 —— 紧接着查必然是 false。
+         *   这是 v1.0.28 在 background 自检上已经踩过一次的坑，这里照同一口径办：
+         *   最多等 3 秒再报，并且把"等了多久"一起写出来。
+         *   （2026-10-26 真机上第一版就是这么误报的：锁都持上了，却写「前台服务=不在 ❌」。） */
+        long svcT0 = System.currentTimeMillis();
+        while (!SniffGuard.alive && System.currentTimeMillis() - svcT0 < 3000) {
+            try { Thread.sleep(200); } catch (InterruptedException ignore) { }
+        }
+        log("[息屏自检] 前台服务：" + (SniffGuard.alive
+                ? ("在 ✅（等了 " + (System.currentTimeMillis() - svcT0) + " ms，异步起的属正常）")
+                : "3 秒了还没起来 ❌ —— 这一路没有保命，切走/息屏随时可能被清"));
+
+        long last = System.currentTimeMillis();
+        while (SB_ON) {
+            long now = System.currentTimeMillis();
+            long over = now - last - SB_TICK_MS;
+            last = now;
+            if (over < 0) over = 0;
+            sbTicks++;
+            if (over > sbMaxOver) sbMaxOver = over;
+            if (over >= SB_STALL_MS) sbStalls++;
+
+            /* ② 只握一次手就断：不发任何业务包、不碰账号 */
+            long netMs = -1;
+            try {
+                java.net.Socket sk = new java.net.Socket();
+                long n0 = System.currentTimeMillis();
+                sk.connect(new java.net.InetSocketAddress("api2.lptiyu.com", 443), 4000);
+                netMs = System.currentTimeMillis() - n0;
+                try { sk.close(); } catch (Throwable ignore) { }
+            } catch (Throwable t) {
+                netMs = -1;
+                sbNetFail++;
+            }
+            if (netMs > sbNetMax) sbNetMax = netMs;
+
+            final String at = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date());
+            log(String.format(Locale.US, "[息屏自检] 第 %d 拍 %s · 超时 %d ms%s · 连 api2 %s",
+                    sbTicks, at, over,
+                    over >= SB_STALL_MS ? "  ⚠ 这一段整段没被调度" : "",
+                    netMs < 0 ? "失败 ❌" : (netMs + " ms ✅")));
+            try { SniffGuard.setText(this, "息屏自检 · 第 " + sbTicks + " 拍（" + at + "）"); }
+            catch (Throwable ignore) { }
+
+            if (System.currentTimeMillis() - sbT0 >= SB_MAX_MS) {
+                sleepBgStop("到点了（15 分钟）");
+                return;
+            }
+            long sleep = SB_TICK_MS - (System.currentTimeMillis() - now);
+            if (sleep < 200) sleep = 200;
+            try {
+                Thread.sleep(sleep);
+            } catch (InterruptedException e) {
+                return;
+            }
+        }
+    }
+
+    private void sleepBgStop(final String why) {
+        if (!SB_ON) {
+            if (!sbStopping) log("[息屏自检] 没在跑（先 am start … --es selftest sleepbg）");
+            return;
+        }
+        if (sbStopping) return;
+        sbStopping = true;
+        SB_ON = false;                       // 循环下一拍自己退出
+        long ms = System.currentTimeMillis() - sbT0;
+        log("");
+        log("[息屏自检] 收尾（" + why + "）：跑了 "
+                + String.format(Locale.US, "%.1f", ms / 60000.0) + " 分钟、共 " + sbTicks + " 拍");
+        log("[息屏自检] · 最长超时：" + sbMaxOver + " ms"
+                + (sbMaxOver >= SB_STALL_MS ? "  ❌" : "  ✅（< " + SB_STALL_MS + " ms 就是没被冻）"));
+        log("[息屏自检] · 超时 ≥" + (SB_STALL_MS / 1000) + " 秒的拍子：" + sbStalls + " 次");
+        log("[息屏自检] · 连 api2 失败：" + sbNetFail + " 次；最慢成功一次 " + sbNetMax + " ms");
+        if (sbTicks <= 1) {
+            log("[息屏自检] 结论：一拍都没走完 —— 时间太短，重来一次并至少熄屏 1 分钟");
+        } else if (sbMaxOver < SB_STALL_MS && sbNetFail == 0) {
+            log("[息屏自检] 结论：全绿 ✅ —— 这段时间里系统既没冻我们、也没掐网络；"
+                    + "息屏后台跑这条路是通的");
+        } else if (sbMaxOver >= SB_STALL_MS) {
+            log("[息屏自检] 结论：❌ 被冻过 " + sbStalls + " 次、最长 "
+                    + String.format(Locale.US, "%.1f", sbMaxOver / 1000.0) + " 秒 —— "
+                    + "这台机器息屏后确实会掐我们；到「🪟 迷你小窗」向导里把"
+                    + "「自启动 / 省电策略 = 无限制 / 后台活动」都放开，再测一次");
+        } else {
+            log("[息屏自检] 结论：进程没被冻（最长超时 " + sbMaxOver + " ms），"
+                    + "但有 " + sbNetFail + " 次连不上 api2 —— 网络被省电策略掐了；"
+                    + "把「电池优化」白名单加上（向导第 ⑤ 步）再测一次");
+        }
+        try {
+            SniffGuard.dropAwake();
+            SniffGuard.dropWifi();
+            RunLog.stop();
+            SniffGuard.runMode = false;
+            SniffGuard.setText(this, null);
+        } catch (Throwable ignore) { }
+        log("[息屏自检] 锁已放：唤醒锁=" + (SniffGuard.awake() ? "还持有 ❌" : "已释放 ✅")
+                + "　网络锁=" + (SniffGuard.wifiHeld() ? "还持有 ❌" : "已释放 ✅"));
+        sbStopping = false;
+    }
+
     /**
      * ★★★ 调试 / 自检入口（2026-10-10 新加的东西都得亲眼看过一遍）。
      *
@@ -4483,6 +4766,12 @@ public class MainActivity extends Activity implements Ledao.Log {
      *       上传照片」这三步按真节奏重放一遍（① 0 s / ② 2.5 s / ③ 6.5 s /
      *       11 s 收卡片）。这三步真跑时要等 500 m、还得联网 + 会话活着，
      *       验收时不可能每次等一遍。**不联网、不上传、不碰账号**。</li>
+     *   <li>{@code sleepbg} / {@code sleepbgstop} —— ★ v1.0.52（用户第 61 轮
+     *       「息屏继续跑没成功」）：把"这台机器息屏以后还让不让我们跑"变成
+     *       **能测出来的数**。每 6 秒记一次墙钟（超时 = 那一段整段没被调度）、
+     *       每拍握一次 443（超时 = 网络被省电策略掐了），两件事分开报。
+     *       真跑一场要令牌、要十几分钟、还会在服务端留一条记录 —— 验一次太贵。
+     *       **不跑业务、不上传、不碰账号**，只在本地写日志。</li>
      * </ul>
      */
     private void runSelfTest(String kind) {
@@ -4543,6 +4832,8 @@ public class MainActivity extends Activity implements Ledao.Log {
             }, 10000);
             return;
         }
+        if ("sleepbg".equals(kind)) { sleepBgStart(); return; }
+        if ("sleepbgstop".equals(kind)) { sleepBgStop("叫停"); return; }
         if ("bgrom".equals(kind)) {
             // ★ v1.0.30：确认这台机器上「自启动页」那串组件名还认不认
             log("[自检] 尝试打开本机自己的「自启动 / 后台运行」页…");

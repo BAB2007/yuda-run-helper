@@ -1,16 +1,16 @@
 {
   "schema": 1,
   "app": "com.ledao.tester",
-  "ver": 151,
-  "name": "1.0.51",
+  "ver": 152,
+  "name": "1.0.52",
   "min": 0,
-  "size": 2175422,
-  "sha256": "95e527480f5586892e51a68b32d742904b28e2325ba70b8d8248908bd6998028",
-  "note": "地图铺「可跑区」；息屏以后接着跑（网络锁 + Doze 豁免 + 息屏记录）",
+  "size": 2167230,
+  "sha256": "0601acc212b76b4a16b252339fd944930ce98ce2c446dec53900cf3f43900118",
+  "note": "息屏真机跑通了（黑屏 827 秒、记录 506992）；把它做成「三分钟自己就能测」",
   "page": "https://github.com/BAB2007/yuda-run-helper",
   "ping": "",
   "urls": [
-    "https://raw.githubusercontent.com/BAB2007/yuda-run-helper/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.51.apk",
-    "https://gitee.com/BAB2007/yuda-run-helper/raw/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.51.apk"
+    "https://raw.githubusercontent.com/BAB2007/yuda-run-helper/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.52.apk",
+    "https://gitee.com/BAB2007/yuda-run-helper/raw/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.52.apk"
   ]
 }
