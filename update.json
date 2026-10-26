@@ -1,16 +1,16 @@
 {
   "schema": 1,
   "app": "com.ledao.tester",
-  "ver": 150,
-  "name": "1.0.50",
+  "ver": 151,
+  "name": "1.0.51",
   "min": 0,
-  "size": 2171326,
-  "sha256": "dc58c41fc6174df951186c2b5a7cc59f6f5ce06bcd051989b55cd5e960d6bd5a",
-  "note": "更新提示不能再「发不出去」：切回前台也查，查不到会明说",
+  "size": 2175422,
+  "sha256": "95e527480f5586892e51a68b32d742904b28e2325ba70b8d8248908bd6998028",
+  "note": "地图铺「可跑区」；息屏以后接着跑（网络锁 + Doze 豁免 + 息屏记录）",
   "page": "https://github.com/BAB2007/yuda-run-helper",
   "ping": "",
   "urls": [
-    "https://raw.githubusercontent.com/BAB2007/yuda-run-helper/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.50.apk",
-    "https://gitee.com/BAB2007/yuda-run-helper/raw/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.50.apk"
+    "https://raw.githubusercontent.com/BAB2007/yuda-run-helper/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.51.apk",
+    "https://gitee.com/BAB2007/yuda-run-helper/raw/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.51.apk"
   ]
 }

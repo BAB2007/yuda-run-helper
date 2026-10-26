@@ -155,10 +155,48 @@ public class CampusMapView extends View {
      */
     private float[] netLL;
     private int[] netBreaks;
-    private boolean showNet = true;
+    /** ★ v1.0.51：默认**不画**路网骨架 —— 用户要的是"可跑区域"，见 {@link #setMask} */
+    private boolean showNet = false;
     private final Paint pNet = new Paint(Paint.ANTI_ALIAS_FLAG);
     private Path netPath;
     private double netOx = Double.NaN, netOy = Double.NaN, netZoom = Double.NaN;
+
+    // ---------------------------------------------------------------- 可跑区（涂鸦）
+    /**
+     * ★ v1.0.51：用户 2026-10-26 第 60 轮——「跑步路线不要显示路网，要显示可跑区域」。
+     *
+     * <p>那张图就是 {@code routenet.bin} v3 尾巴里的涂鸦栅格（{@link WalkMask} 位图化），
+     * 一格 1.9 m，涂过的地方染色、没涂的透明。它和 {@code RouteNet.inside()} 是同一份数据 ——
+     * 也就是说**画出来的绿 = 轨迹可以经过的地方**，不是另画一张好看的范围图。
+     */
+    private Bitmap maskBmp;
+    private double maskLon0 = Double.NaN, maskLat0, maskDLon, maskDLat;
+    private boolean showMask = true;
+    private final Paint pMask = new Paint(Paint.FILTER_BITMAP_FLAG);
+
+    /**
+     * 铺上"可跑区"位图。
+     *
+     * @param bmp   {@link WalkMask#build} 的产物；null = 这份资源没有掩膜
+     * @param lon0  第 0 列左边缘的经度
+     * @param lat0  第 0 行上边缘的纬度
+     * @param dLon  一格多少经度
+     * @param dLat  一格多少纬度
+     */
+    public void setMask(Bitmap bmp, double lon0, double lat0, double dLon, double dLat) {
+        maskBmp = bmp;
+        maskLon0 = lon0;
+        maskLat0 = lat0;
+        maskDLon = dLon;
+        maskDLat = dLat;
+        invalidate();
+    }
+
+    public void setShowMask(boolean b) { showMask = b; invalidate(); }
+
+    public boolean isShowMask() { return showMask; }
+
+    public boolean hasMask() { return maskBmp != null; }
 
     public void setNetwork(float[] ll, int[] breaks) {
         netLL = ll;
@@ -406,7 +444,21 @@ public class CampusMapView extends View {
             }
         }
 
-        // ---- 路网底纹（路线就是在这张图上走出来的）
+        // ---- 可跑区（涂鸦）：压在底图上面、路线下面
+        // 缩得太小时整张图不到一百像素，染色只会糊成一团，不如不画。
+        if (showMask && maskBmp != null && zoom >= 13.2) {
+            float x0 = sx(maskLon0, ox);
+            float y0 = sy(maskLat0, oy);
+            float x1 = sx(maskLon0 + maskDLon * maskBmp.getWidth(), ox);
+            float y1 = sy(maskLat0 - maskDLat * maskBmp.getHeight(), oy);
+            if (x1 > -8 && y1 > -8 && x0 < w + 8 && y0 < h + 8) {
+                cv.drawBitmap(maskBmp,
+                        new Rect(0, 0, maskBmp.getWidth(), maskBmp.getHeight()),
+                        new RectF(x0, y0, x1, y1), pMask);
+            }
+        }
+
+        // ---- 路网骨架（默认关；用户要的是上面那片，不是这条线）
         // 缩得太小时整张校园只有几十像素，2871 段会糊成一坨、还白费一次重投影。
         if (showNet && zoom >= 13.5) {
             Path np = networkPath(ox, oy);

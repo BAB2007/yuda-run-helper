@@ -44,7 +44,7 @@ gitee类似
 
 不想下整个压缩包的话，直接进安装包目录点那个 APK，再点 **Download raw file** 就行：
 
-* [`宇达步道乐跑助手/`](https://github.com/BAB2007/yuda-run-helper/blob/main/宇达步道乐跑助手/) —— **原版**：`宇达步道乐跑助手-v1.0.50.apk`（里程每次随机）
+* [`宇达步道乐跑助手/`](https://github.com/BAB2007/yuda-run-helper/blob/main/宇达步道乐跑助手/) —— **原版**：`宇达步道乐跑助手-v1.0.51.apk`（里程每次随机）
 
 **每个目录里只留一份安装包，文件名带版本号。** 装完打开，**标题栏右侧就是版本号**，
 对不上就是下到了旧的（下到了旧的按 `Ctrl+F5` 强刷一次页面）。
@@ -227,7 +227,7 @@ app/                        Android 工程·原版（无 Gradle 手写构建）
   src/com/ledao/tester/     源码
   assets/                   校园路网 / 水面 / 街道栅格 / 内置图标 / 支付宝收款码（pay_qr.png）
   res/                      图标 / 字符串
-宇达步道乐跑助手/             原版安装包（v1.0.50）
+宇达步道乐跑助手/             原版安装包（v1.0.51）
 update.json                 软件内更新的清单：最新版本 / 大小 / sha256 / 两个下载源
                             （`ping` 那一栏空着 = 不做任何统计）
 build_apk.py                不用 Gradle 的构建脚本（四个 App 共用：python build_apk.py）

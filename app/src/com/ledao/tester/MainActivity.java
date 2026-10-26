@@ -114,6 +114,16 @@ public class MainActivity extends Activity implements Ledao.Log {
     private TextView tvLog, tvStatus, tvIdentBrief, tvRouteHead, tvRouteInfo, tvTitle, tvAutoInfo;
     /** ★ v1.0.50：侧栏「🔄 更新」那段正文 —— 每次打开侧栏时按 Cloud.lastLine() 刷一遍 */
     private TextView updTip;
+    /* ★★★ v1.0.51（用户第 60 轮）：这一场的息屏记录。
+     *
+     *   用户问「能不能添加息屏依旧可后台刷跑」。后台三件套（前台服务 / 唤醒锁 /
+     *   日志落盘）从 v1.0.25 就在了，可**用户没法验证它到底有没有在跑** ——
+     *   屏幕黑着，他只能等跑完看结果。所以这里把"屏幕什么时候灭、亮了多久、
+     *   灭着的时候锁还在不在"记进日志：跑完翻一眼就知道后台有没有被掐。
+     */
+    private long screenOffAt = 0L, screenOffTotalMs = 0L;
+    private int screenOffTimes = 0;
+    private android.content.BroadcastReceiver screenRcv = null;
     private Button btnRun, btnSniff, btnClear, btnProxyHelp, btnCopyLog, btnCa, btnRealId, btnFace, btnMini;
     private Button btnMenu;
     /** 地图卡片的容器 */
@@ -238,6 +248,25 @@ public class MainActivity extends Activity implements Ledao.Log {
             log("✅ " + routeNet + "（路线规划已启用：街口/街段图上随机游走）");
             if (map != null) {
                 map.setNetwork(routeNet.netLatLon(), routeNet.netBreaks());
+                /* ★★★ v1.0.51（用户第 60 轮）：地图上铺**可跑区**，不再铺那条路网骨架。
+                 *   用户原话：「跑步路线不要显示路网，要显示可跑区域」。 */
+                if (routeNet.maskBits != null) {
+                    android.graphics.Bitmap wm = WalkMask.build(routeNet);
+                    if (wm != null) {
+                        map.setMask(wm, routeNet.maskLon0, routeNet.maskLat0,
+                                routeNet.maskDLon, routeNet.maskDLat);
+                        int painted = WalkMask.countPainted(routeNet);
+                        double areaM2 = painted * (double) routeNet.maskCellM * routeNet.maskCellM;
+                        log("✅ 可跑区已铺上地图：" + routeNet.maskW + "x" + routeNet.maskH
+                                + " 格 · " + String.format(Locale.US, "%.2f", routeNet.maskCellM)
+                                + " m/格 · 涂了 " + painted + " 格（约 "
+                                + String.format(Locale.US, "%.0f", areaM2) + " m²）");
+                    } else {
+                        log("⚠ 可跑区掩膜是空的 —— 地图上只画路线");
+                    }
+                } else {
+                    log("⚠ 这份 routenet.bin 没有掩膜（旧版资源）—— 地图上画不了可跑区");
+                }
             }
         } else {
             log("⚠ 路网资源 routenet.bin 读不到 —— 路线回落到旧版（街道栅格 A*）");
@@ -322,6 +351,9 @@ public class MainActivity extends Activity implements Ledao.Log {
             // ★ v1.0.50：跑步中还弹更新窗会打断这一局 —— 只记结果，等回到前台再问
             Cloud.onStart(this, !RUN_ACTIVE);
         }, 3000);
+
+        // ★ v1.0.51：息屏/亮屏广播 —— 「息屏以后还在跑吗」这件事必须能在日志里看见
+        screenWatchInstall();
     }
 
     @Override
@@ -426,6 +458,8 @@ public class MainActivity extends Activity implements Ledao.Log {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        // ★ v1.0.51：先摘掉息屏广播（跑步线程还活着也无妨，它只写日志）
+        screenWatchUninstall();
         /* ★★★ v1.0.25（docs/59）：界面被销毁**不再**停掉正在跑的跑步线程。
          *
          *   以前这里是"不管界面为什么被销毁，都先把跑步线程停掉"（拿 RUN_LEDAO
@@ -763,9 +797,13 @@ public class MainActivity extends Activity implements Ledao.Log {
         Button bOut = mkBtn("－", AppPrefs.hex(Q.GRAY), 15f);
         Button bFit = mkBtn("全校", AppPrefs.hex(Q.GRAY), 11.5f);
         Button bMe = mkBtn("定位", AppPrefs.hex(Q.SKY), 11.5f);
-        // ★ 路网底纹开关（2026-10-09）：路线是在这张图上随机游走出来的，
-        //   开着它才看得懂"为什么这条线要绕这么一下"。嫌乱就关掉。
-        Button bNet = mkBtn("路网", AppPrefs.hex(Q.MINT), 11.5f);
+        /* ★★★ v1.0.51（用户第 60 轮）：「路网」这颗键换成「可跑区」。
+         *
+         *   以前铺的是路网骨架（363 街口 / 433 街段的细线）—— 那只是**生成路线用的骨架**，
+         *   不是人能跑的全部地方。用户原话：「跑步路线不要显示路网，要显示可跑区域」。
+         *   现在这颗键开关的是涂鸦栅格（{@link WalkMask}）：绿=能跑，灰=跑不了，
+         *   和 {@code RouteNet.inside()} 是同一份数据。 */
+        Button bNet = mkBtn("可跑区", AppPrefs.hex(Q.MINT), 11.5f);
         /* ★★★ v1.0.33（用户第 3 条）：「换路线」—— 当场换一条预览路线。
          *   以前预览路线只在进软件时生成一次（跑完一局再抽下一条），
          *   想换一条只能退出去重进。 */
@@ -775,13 +813,15 @@ public class MainActivity extends Activity implements Ledao.Log {
         bFit.setOnClickListener(v -> map.fitRoute());
         bNew.setOnClickListener(v -> refreshPreviewRoute());
         bNet.setOnClickListener(v -> {
-            if (routeNet == null) {
-                Toast.makeText(this, "路网资源没加载，无法显示", Toast.LENGTH_SHORT).show();
+            if (map == null || !map.hasMask()) {
+                Toast.makeText(this, "可跑区没加载（这份 routenet.bin 没有涂鸦掩膜）",
+                        Toast.LENGTH_SHORT).show();
                 return;
             }
-            boolean on = !map.isShowNetwork();
-            map.setShowNetwork(on);
-            Toast.makeText(this, on ? "显示路网底纹" : "隐藏路网底纹", Toast.LENGTH_SHORT).show();
+            boolean on = !map.isShowMask();
+            map.setShowMask(on);
+            Toast.makeText(this, on ? "显示可跑区（上色的地方都能跑）" : "隐藏可跑区",
+                    Toast.LENGTH_SHORT).show();
         });
         bMe.setOnClickListener(v -> {
             if (map.hasPosition()) map.animateTo(map.getCurLat(), map.getCurLon(), 18.0);
@@ -1402,6 +1442,80 @@ public class MainActivity extends Activity implements Ledao.Log {
         }
     }
 
+    // ==================================================================
+    //  息屏记录（★ v1.0.51）
+    // ==================================================================
+
+    /** 本场从零开始记（每次开跑时调）。 */
+    private void screenWatchReset() {
+        screenOffAt = 0L;
+        screenOffTotalMs = 0L;
+        screenOffTimes = 0;
+    }
+
+    /**
+     * 这一场到底黑屏多久。
+     *
+     * <p>为什么值得单独记：用户问的"息屏还能不能后台刷跑"只有一个客观答案 ——
+     * 屏幕灭着的那段时间里，定位包有没有按节拍发出去。日志里有了这个数，
+     * 再对着 {@code Freeze} 那几行（"冻住 N 秒"），一眼就能判。
+     */
+    private String screenWatchSummary() {
+        long total = screenOffTotalMs;
+        if (screenOffAt > 0) total += Math.max(0L, System.currentTimeMillis() - screenOffAt);
+        if (screenOffTimes == 0) return "★ 息屏记录：这一场屏幕一直亮着（没进过息屏）";
+        return String.format(Locale.US,
+                "★ 息屏记录：这一场屏幕灭了 %d 次、共 %.1f 秒（收尾时还黑着：%s）"
+              + " —— 如果上面「冻结」是 0 次，就说明息屏期间后台一直在正常发包",
+                screenOffTimes, total / 1000.0, screenOffAt > 0 ? "是" : "否");
+    }
+
+    /** 挂上息屏/亮屏广播（onCreate 里调一次；onDestroy 里摘掉）。 */
+    private void screenWatchInstall() {
+        try {
+            screenRcv = new android.content.BroadcastReceiver() {
+                @Override
+                public void onReceive(android.content.Context c, android.content.Intent it) {
+                    String a = it == null ? null : it.getAction();
+                    if (android.content.Intent.ACTION_SCREEN_OFF.equals(a)) {
+                        screenOffTimes++;
+                        screenOffAt = System.currentTimeMillis();
+                        if (RUN_ACTIVE) {
+                            log("🌙 屏幕灭了（息屏）—— 跑步继续：唤醒锁="
+                                    + (SniffGuard.awake() ? "持" : "没持")
+                                    + " 网络锁=" + (SniffGuard.wifiHeld() ? "持" : "没持")
+                                    + " 前台服务=" + (SniffGuard.alive ? "在" : "不在"));
+                        }
+                    } else if (android.content.Intent.ACTION_SCREEN_ON.equals(a)) {
+                        if (screenOffAt > 0) {
+                            long d = Math.max(0L, System.currentTimeMillis() - screenOffAt);
+                            screenOffTotalMs += d;
+                            screenOffAt = 0L;
+                            if (RUN_ACTIVE) {
+                                log("☀ 屏幕亮了（这一觉 " + (d / 1000) + " 秒，跑步继续）");
+                            }
+                        }
+                    }
+                }
+            };
+            android.content.IntentFilter f = new android.content.IntentFilter();
+            f.addAction(android.content.Intent.ACTION_SCREEN_OFF);
+            f.addAction(android.content.Intent.ACTION_SCREEN_ON);
+            registerReceiver(screenRcv, f);
+        } catch (Throwable t) {
+            screenRcv = null;
+        }
+    }
+
+    private void screenWatchUninstall() {
+        try {
+            if (screenRcv != null) unregisterReceiver(screenRcv);
+        } catch (Throwable ignore) {
+            /* 没注册成功 / 已经摘过：都不影响任何事 */
+        }
+        screenRcv = null;
+    }
+
     /**
      * ★ v1.0.32（docs/64）：把「迷你小窗」那一行收敛到一处 —— 有没有权限、开没开，
      * 一句话说清（用户看一眼就知道该不该点）。
@@ -1482,7 +1596,42 @@ public class MainActivity extends Activity implements Ledao.Log {
             });
             box.addView(b4rom);
 
-            Button b4 = qBtnWide("⑤ 把状态写进日志（再点「📋 复制日志」发我）", Q.SKY, 12.5f);
+            /* ★★★ v1.0.51（用户第 60 轮）：「息屏依旧可后台刷跑」在系统那一层还差一道 ——
+             *   Doze（打盹模式）。屏幕黑着、手机放着不动，系统会掐掉唤醒锁和网络，
+             *   只有 App 进了「电池优化白名单」才不受这一条管。
+             *   国产 ROM 上这份 AOSP 白名单确实常被忽略（docs/62），但它是唯一
+             *   我们能通过 API 正当地要到的那一层；要到就要着，别让它空着。 */
+            Button bDoze = qBtnWide(ignoringBatteryOpt()
+                    ? "⑤ 电池优化：已排除 ✅（Doze 掐不到我们，点这里看一眼）"
+                    : "⑤ 把助手从「电池优化」里排除（Doze 会掐断息屏后的网络）", Q.MINT, 12.5f);
+            bDoze.setOnClickListener(v -> {
+                if (ignoringBatteryOpt()) {
+                    Toast.makeText(this, "已经在白名单里了：息屏以后 Doze 不会掐我们",
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+                try {
+                    Intent i = new Intent(
+                            android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                    i.setData(Uri.parse("package:" + getPackageName()));
+                    startActivity(i);
+                    log("[息屏] 已打开系统的「电池优化」询问页 —— 选「允许」，"
+                            + "息屏后 Doze 就不会掐掉我们的网络和唤醒锁。");
+                } catch (Throwable t) {
+                    try {
+                        startActivity(new Intent(
+                                android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+                        log("[息屏] 这台机器不支持直接跳询问页，已打开「电池优化」列表 ——"
+                                + "找到助手，改成「不限制 / 不优化」。");
+                    } catch (Throwable t2) {
+                        Toast.makeText(this, "这台机器打不开电池优化页面，去系统设置里自己找一下",
+                                Toast.LENGTH_LONG).show();
+                    }
+                }
+            });
+            box.addView(bDoze);
+
+            Button b4 = qBtnWide("⑥ 把状态写进日志（再点「📋 复制日志」发我）", Q.SKY, 12.5f);
             b4.setOnClickListener(v -> {
                 log("[小窗] ── 状态快照 ──");
                 log("   " + MiniWindow.statusLine(this));
@@ -2496,6 +2645,8 @@ public class MainActivity extends Activity implements Ledao.Log {
                 if (!SniffGuard.alive) SniffGuard.start(MainActivity.this);
                 SniffGuard.runMode = true;
                 SniffGuard.holdAwake(MainActivity.this, 45L * 60 * 1000);
+                SniffGuard.holdWifi(MainActivity.this);     // ★ v1.0.51：息屏后 Wi-Fi 别省电断流
+                screenWatchReset();                         // ★ v1.0.51：本场从零开始记息屏
                 SniffGuard.setText(MainActivity.this, "准备起跑…（可以息屏 / 切到别的应用）");
                 RunLog.start(getFilesDir(), String.format(Locale.US,
                         "══════ 本场开始 %s  目标 %.2f km ══════",
@@ -2517,6 +2668,9 @@ public class MainActivity extends Activity implements Ledao.Log {
                 log("   · 唤醒锁：" + (SniffGuard.awake()
                         ? "已持有 ✅（息屏后节拍不会被拉长）"
                         : "没拿到 ❌ —— 息屏后每一拍可能被拉长，配速会被拖慢"));
+                log("   · 网络锁：" + (SniffGuard.wifiHeld()
+                        ? "已持有 ✅（息屏后 Wi-Fi 不进省电，定位包照发）"
+                        : "没拿到（没有 Wi-Fi 或系统拒绝）—— 息屏后网络可能被省电策略拖慢"));
                 log("   · 日志落盘：files/" + RunLog.NAME + "（"
                         + (RunLog.active() ? "可写 ✅" : "写不了 ❌") + "）");
                 log("   · 白名单：" + (ignoringBatteryOpt() ? "已加 ✅" : "还没加 ❌")
@@ -2669,6 +2823,7 @@ public class MainActivity extends Activity implements Ledao.Log {
                  *   必须放在 finally：不然出错退出会把锁一直攥着耗电。 */
                 try {
                     SniffGuard.dropAwake();
+                    SniffGuard.dropWifi();                     // ★ v1.0.51：网络锁一起放
                     RunLog.stop();
                     SniffGuard.runMode = false;
                     SniffGuard.setText(MainActivity.this, null);
@@ -2676,7 +2831,10 @@ public class MainActivity extends Activity implements Ledao.Log {
                     if (MiniWindow.shown()) MiniWindow.hide(); // ★ v1.0.32：这一场跑完，小窗收起
                     log("★ 后台运行已收尾：唤醒锁已释放（"
                             + (SniffGuard.awake() ? "还持有 ❌" : "已释放 ✅")
+                            + "），网络锁已释放（"
+                            + (SniffGuard.wifiHeld() ? "还持有 ❌" : "已释放 ✅")
                             + "），日志留在 files/" + RunLog.NAME);
+                    log(screenWatchSummary());                 // ★ v1.0.51：这一场息屏了多久
                 } catch (Throwable ignore) { }
             }
         }, "ledao-run");
