@@ -82,6 +82,19 @@ public class RouteNet {
     public final float maskCellM;
     public final byte[] maskBits;
 
+    /**
+     * ★ v1.0.51：栅格落到经纬度上的锚点 —— 地图要用它画「可跑区」。
+     *
+     * <p>第 (0,0) 格的左上角就是整张图的 (lonLeft, latTop)（掩膜和路网共用
+     * paint.json 那个包围盒），一格 = {@code maskCellM} 米：
+     * <pre>
+     *   经度每格 = (cell_m / mx) / widthPx  * lonSpan
+     *   纬度每格 = (cell_m / my) / heightPx * latSpan
+     * </pre>
+     * 所以 {@code lon = maskLon0 + 列 * maskDLon}、{@code lat = maskLat0 - 行 * maskDLat}。
+     */
+    public final double maskLon0, maskLat0, maskDLon, maskDLat;
+
     public final int nNodes, nEdges, nPts, nCps;
 
     private RouteNet(ByteBuffer b) {
@@ -175,8 +188,14 @@ public class RouteNet {
             maskW = mw; maskH = mh; maskStride = mstride; maskCellM = mcell;
             maskBits = new byte[mstride * mh];
             b.get(maskBits);
+            // ★ v1.0.51：栅格 → 经纬度（掩膜和路网共用 paint.json 那个包围盒）
+            maskLon0 = lonLeft;
+            maskLat0 = latTop;
+            maskDLon = (mcell / mx) / widthPx * lonSpan;
+            maskDLat = (mcell / my) / heightPx * latSpan;
         } else {
             maskW = 0; maskH = 0; maskStride = 0; maskCellM = 0f; maskBits = null;
+            maskLon0 = 0; maskLat0 = 0; maskDLon = 0; maskDLat = 0;
         }
     }
 

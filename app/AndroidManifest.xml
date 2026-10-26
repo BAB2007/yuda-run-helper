@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.ledao.tester"
-    android:versionCode="150"
-    android:versionName="1.0.50">
+    android:versionCode="151"
+    android:versionName="1.0.51">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -14,6 +14,13 @@
          这个类型，而且哪天抬 targetSdk 就必须有 —— 一次配齐。 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- ★ v1.0.51（用户第 60 轮「息屏依旧可后台刷跑」）：
+         ① ACCESS_WIFI_STATE：拿 WifiLock 用（屏幕一黑 Wi-Fi 就进省电，定位包会被拖慢）；
+         ② REQUEST_IGNORE_BATTERY_OPTIMIZATIONS：申请「电池优化白名单」，
+            Doze 只对不在白名单里的 App 掐网络和唤醒锁。 -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- 跑步前把后台的步道乐跑进程干掉。
          否则它会在跑步中途自己刷新令牌（单会话），把我们的令牌顶掉 →
          后半程全返回 102「该账号已在其他手机登录」，OSS 凭证拿不到，整趟白跑。

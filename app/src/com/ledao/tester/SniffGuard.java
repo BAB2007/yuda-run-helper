@@ -156,6 +156,59 @@ public class SniffGuard extends Service {
         }
     }
 
+    // ==================================================================
+    //  网络锁：息屏以后 Wi-Fi 别省电省到断流（★ v1.0.51）
+    // ==================================================================
+
+    /**
+     * ★★★ v1.0.51（用户第 60 轮：「能不能添加息屏依旧可后台刷跑的功能」）。
+     *
+     * <p>唤醒锁只保证 **CPU** 不睡，管不了 Wi-Fi。屏幕一黑，绝大多数机器会让
+     * Wi-Fi 进省电（DTIM 拉长、部分批次丢包）。这一场跑步每隔几秒就要发一个定位包，
+     * 一旦那几秒正好卡在省电窗口里，请求就会变慢甚至失败 —— 表现出来就是
+     * 「息屏以后那一场走得特别慢、配速被拖坏」。
+     *
+     * <p>{@code WIFI_MODE_FULL_HIGH_PERF} 就是告诉系统"这台机器这会儿在等网络，
+     * 别省电"。它不点亮屏幕、也不影响耗电统计里那条"前台服务"。
+     *
+     * <p>拿不到就算了（没有 Wi-Fi 硬件 / 系统拒绝）：跑步照跑，只是回到老样子。
+     */
+    public static synchronized void holdWifi(Context c) {
+        try {
+            if (c != null) ctx = c.getApplicationContext();
+            if (wifiLock == null) {
+                if (ctx == null) return;
+                android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager)
+                        ctx.getSystemService(Context.WIFI_SERVICE);
+                if (wm == null) return;
+                wifiLock = wm.createWifiLock(
+                        android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "ledao:wifi");
+                wifiLock.setReferenceCounted(false);   // 重复 acquire 不需要配平 release
+            }
+            if (!wifiLock.isHeld()) wifiLock.acquire();
+        } catch (Throwable ignore) {
+            /* 拿不到就算了：跑步照跑，只是息屏后网络可能被省电策略拖慢 */
+        }
+    }
+
+    /** 放掉网络锁（跑步结束 / 出错退出都要调） */
+    public static synchronized void dropWifi() {
+        try {
+            if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
+        } catch (Throwable ignore) { }
+    }
+
+    /** 现在拿着网络锁吗（自检和日志用） */
+    public static synchronized boolean wifiHeld() {
+        try {
+            return wifiLock != null && wifiLock.isHeld();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private static android.net.wifi.WifiManager.WifiLock wifiLock = null;
+
     /**
      * ★ v1.0.25：改常驻通知里那句话（跑步期间显示进度，息屏/切走时用户下拉就能看）。
      * 服务还活着才会真的刷；没活着时只记下来，下次 {@link #start} 时用上。
