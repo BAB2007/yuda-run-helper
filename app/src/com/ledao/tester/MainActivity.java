@@ -4550,8 +4550,83 @@ public class MainActivity extends Activity implements Ledao.Log {
     private volatile int sbStalls = 0;
     private volatile int sbNetFail = 0;
     private volatile long sbNetMax = 0;
+    /** 因为"这台手机根本没网"而跳过握手的拍数（★ v1.0.53）—— **跳过不等于失败** */
+    private volatile int sbNetSkip = 0;
     private volatile long sbT0 = 0;
     private volatile boolean sbStopping = false;
+
+    /**
+     * ★★★ v1.0.53（2026-10-26 晚，真机上抓到的第二个"会撒谎的体检"）：
+     * 现在这台手机有没有**一条真的能用**的网络？返回空串 = 有网。
+     *
+     * <p>为什么必须有它：v1.0.52 的自检只做一件事 —— 握一次 api2:443。
+     * 那天 18:16 用户把移动数据关了、Wi-Fi 也没连，于是 37 拍全部"连 api2 失败 ❌"，
+     * 收尾那句直接写成「**网络被省电策略掐了，把白名单加上**」——
+     * **完全指错方向**：手机上根本没有网，跟省电策略一点关系都没有。
+     * 一个会撒谎的体检比没有体检更坏（v1.0.28 那条同理），
+     * 所以这里先问系统要一个"有没有网"的答案，再决定该不该把锅扣给 ROM。
+     *
+     * <p>三种不同的话（它们的修法完全不同）：
+     * <ul>
+     *   <li>没有 active network —— 移动数据关了 / Wi-Fi 没连上；</li>
+     *   <li>有网但没 INTERNET 能力 —— 连上了却出不去（校园网要认证那种）；</li>
+     *   <li>有网但没 VALIDATED —— 系统自己还没连通性校验通过（刚切网 / 信号差）。</li>
+     * </ul>
+     */
+    private String noNetWhy() {
+        try {
+            android.net.ConnectivityManager cm = (android.net.ConnectivityManager)
+                    getSystemService(CONNECTIVITY_SERVICE);
+            if (cm == null) return "";
+            android.net.Network n = cm.getActiveNetwork();
+            android.net.NetworkCapabilities c =
+                    (n == null) ? null : cm.getNetworkCapabilities(n);
+            if (c == null) return "这台手机现在没有可用的网络（移动数据关了 / Wi-Fi 没连上）";
+            if (!c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+                return "连上了网络，但这张网没有出口（校园网 / 需要认证那种）";
+            }
+            if (!c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                return "网络还没通过系统的连通性校验（刚切网 / 信号差）";
+            }
+            return "";
+        } catch (Throwable t) {
+            return "";          // 问不出来就当有网，照常测（别因为这层判断把自检搞坏）
+        }
+    }
+
+    /**
+     * 连不上是"哪一类"连不上（★ v1.0.53）。
+     *
+     * <p>解析不到 / 连不上 / 对方拒绝 —— 这三样的修法完全不同：
+     * 前两个多半是网本身的问题，最后一个才是"对面不理我们"。
+     * 上一版只有一句「失败 ❌」，等于什么都没说。
+     */
+    private static String errKind(Throwable t) {
+        if (t == null) return "未知";
+        if (t instanceof java.net.UnknownHostException) return "域名解析不了（多半是没网 / DNS 不通）";
+        if (t instanceof java.net.SocketTimeoutException) return "连不上或超时";
+        if (t instanceof java.net.ConnectException) return "对方拒绝连接";
+        return t.getClass().getSimpleName();
+    }
+
+    /** 当前那条网是什么（写进日志用，不做任何判断） */
+    private String netDesc() {
+        try {
+            android.net.ConnectivityManager cm = (android.net.ConnectivityManager)
+                    getSystemService(CONNECTIVITY_SERVICE);
+            if (cm == null) return "?";
+            android.net.Network n = cm.getActiveNetwork();
+            android.net.NetworkCapabilities c =
+                    (n == null) ? null : cm.getNetworkCapabilities(n);
+            if (c == null) return "没有";
+            if (c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)) return "Wi-Fi";
+            if (c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR)) return "移动数据";
+            if (c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)) return "有线";
+            return "其它";
+        } catch (Throwable t) {
+            return "?";
+        }
+    }
 
     private void sleepBgStart() {
         if (SB_ON) {
@@ -4569,6 +4644,7 @@ public class MainActivity extends Activity implements Ledao.Log {
         sbStalls = 0;
         sbNetFail = 0;
         sbNetMax = 0;
+        sbNetSkip = 0;
         sbT0 = System.currentTimeMillis();
         screenWatchReset();
         log("");
@@ -4598,6 +4674,12 @@ public class MainActivity extends Activity implements Ledao.Log {
         log("[息屏自检] 电池优化白名单：" + (ignoringBatteryOpt() ? "已加 ✅" : "没加 ❌")
                 + "　机型 " + android.os.Build.MANUFACTURER + " " + android.os.Build.MODEL
                 + " / Android " + android.os.Build.VERSION.RELEASE);
+        /* ★ v1.0.53：先把"有没有网"问清楚，再决定"连不上"该怪谁。
+         *   没有网的话，网络那一半**直接跳过**（跳过不算失败）—— 见 noNetWhy() 的注释。 */
+        String noNet = noNetWhy();
+        log("[息屏自检] 网络：" + (noNet.length() == 0
+                ? ("有 ✅（" + netDesc() + "）")
+                : "⚠ " + noNet + " —— 网络那一半先跳过，只测进程会不会被冻"));
         new Thread(this::sleepBgLoop, "selftest-sleepbg").start();
     }
 
@@ -4624,25 +4706,40 @@ public class MainActivity extends Activity implements Ledao.Log {
             if (over > sbMaxOver) sbMaxOver = over;
             if (over >= SB_STALL_MS) sbStalls++;
 
-            /* ② 只握一次手就断：不发任何业务包、不碰账号 */
-            long netMs = -1;
-            try {
-                java.net.Socket sk = new java.net.Socket();
-                long n0 = System.currentTimeMillis();
-                sk.connect(new java.net.InetSocketAddress("api2.lptiyu.com", 443), 4000);
-                netMs = System.currentTimeMillis() - n0;
-                try { sk.close(); } catch (Throwable ignore) { }
-            } catch (Throwable t) {
-                netMs = -1;
-                sbNetFail++;
+            /* ② 只握一次手就断：不发任何业务包、不碰账号。
+             *   ★ v1.0.53：手机**根本没网**的时候不握、也不算失败 ——
+             *   那种情况下的"连不上"说明不了任何关于省电策略的事，
+             *   记成失败就会得出"网络被掐了，去加白名单"这个**错的**结论。 */
+            String skipWhy = noNetWhy();
+            long netMs = -1;                    // -1 = 真失败；-2 = 跳过
+            String netTxt;
+            if (skipWhy.length() > 0) {
+                sbNetSkip++;
+                netMs = -2;
+                netTxt = "跳过（手机没网，不算失败）";
+            } else {
+                Throwable err = null;
+                try {
+                    java.net.Socket sk = new java.net.Socket();
+                    long n0 = System.currentTimeMillis();
+                    sk.connect(new java.net.InetSocketAddress("api2.lptiyu.com", 443), 4000);
+                    netMs = System.currentTimeMillis() - n0;
+                    try { sk.close(); } catch (Throwable ignore) { }
+                } catch (Throwable t) {
+                    netMs = -1;
+                    err = t;
+                    sbNetFail++;
+                }
+                netTxt = (netMs >= 0) ? (netMs + " ms ✅") : ("失败 ❌（" + errKind(err) + "）");
             }
             if (netMs > sbNetMax) sbNetMax = netMs;
 
             final String at = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date());
+            final String netOut = netTxt;
             log(String.format(Locale.US, "[息屏自检] 第 %d 拍 %s · 超时 %d ms%s · 连 api2 %s",
                     sbTicks, at, over,
                     over >= SB_STALL_MS ? "  ⚠ 这一段整段没被调度" : "",
-                    netMs < 0 ? "失败 ❌" : (netMs + " ms ✅")));
+                    netOut));
             try { SniffGuard.setText(this, "息屏自检 · 第 " + sbTicks + " 拍（" + at + "）"); }
             catch (Throwable ignore) { }
 
@@ -4675,21 +4772,30 @@ public class MainActivity extends Activity implements Ledao.Log {
         log("[息屏自检] · 最长超时：" + sbMaxOver + " ms"
                 + (sbMaxOver >= SB_STALL_MS ? "  ❌" : "  ✅（< " + SB_STALL_MS + " ms 就是没被冻）"));
         log("[息屏自检] · 超时 ≥" + (SB_STALL_MS / 1000) + " 秒的拍子：" + sbStalls + " 次");
-        log("[息屏自检] · 连 api2 失败：" + sbNetFail + " 次；最慢成功一次 " + sbNetMax + " ms");
+        log("[息屏自检] · 连 api2：失败 " + sbNetFail + " 次"
+                + (sbNetSkip > 0 ? "、跳过 " + sbNetSkip + " 拍（当时手机没网，不算失败）" : "")
+                + (sbNetMax > 0 ? "；最慢成功一次 " + sbNetMax + " ms" : ""));
+        /* ★ v1.0.53：结论必须**分开**说 —— 进程被冻和网络被掐是两件事，
+         *   修法也不同；而"手机根本没网"既不是前者也不是后者，不能扣给 ROM。
+         *   2026-10-26 18:16 就是这么误报过一次（37 拍全失败 → 写成"网络被省电策略掐了"）。 */
         if (sbTicks <= 1) {
             log("[息屏自检] 结论：一拍都没走完 —— 时间太短，重来一次并至少熄屏 1 分钟");
-        } else if (sbMaxOver < SB_STALL_MS && sbNetFail == 0) {
-            log("[息屏自检] 结论：全绿 ✅ —— 这段时间里系统既没冻我们、也没掐网络；"
-                    + "息屏后台跑这条路是通的");
         } else if (sbMaxOver >= SB_STALL_MS) {
             log("[息屏自检] 结论：❌ 被冻过 " + sbStalls + " 次、最长 "
                     + String.format(Locale.US, "%.1f", sbMaxOver / 1000.0) + " 秒 —— "
                     + "这台机器息屏后确实会掐我们；到「🪟 迷你小窗」向导里把"
                     + "「自启动 / 省电策略 = 无限制 / 后台活动」都放开，再测一次");
-        } else {
+        } else if (sbNetFail > 0) {
             log("[息屏自检] 结论：进程没被冻（最长超时 " + sbMaxOver + " ms），"
-                    + "但有 " + sbNetFail + " 次连不上 api2 —— 网络被省电策略掐了；"
+                    + "但有 " + sbNetFail + " 次连不上 api2 —— 那几拍网络被掐了；"
                     + "把「电池优化」白名单加上（向导第 ⑤ 步）再测一次");
+        } else if (sbNetSkip > 0) {
+            log("[息屏自检] 结论：进程侧全绿 ✅（最长超时 " + sbMaxOver + " ms）—— "
+                    + "但**网络那一半没测**：自检期间这台手机一直没网（跳过 " + sbNetSkip
+                    + " 拍）。先把移动数据 / Wi-Fi 连上，再测一次才知道息屏后网络会不会被掐");
+        } else {
+            log("[息屏自检] 结论：全绿 ✅ —— 这段时间里系统既没冻我们、也没掐网络；"
+                    + "息屏后台跑这条路是通的");
         }
         try {
             SniffGuard.dropAwake();
