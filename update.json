@@ -1,16 +1,16 @@
 {
   "schema": 1,
   "app": "com.ledao.tester",
-  "ver": 154,
-  "name": "1.0.54",
+  "ver": 155,
+  "name": "1.0.55",
   "min": 0,
-  "size": 2163134,
-  "sha256": "f1e7312376f47f6aabe75f489d3ac920bcd6ba6960dfbb6b6beea2f0262492d9",
-  "note": "删掉「息屏继续跑」：这条路做不整齐，换成人人都认的一条",
+  "size": 2179518,
+  "sha256": "ef8e17b73dcefee824839c4b9309878c21801f641526e2551635c4da85979b9d",
+  "note": "两张脸分开存、跑完就删；按钮改名「提取令牌」；留言换新",
   "page": "https://github.com/BAB2007/yuda-run-helper",
   "ping": "",
   "urls": [
-    "https://raw.githubusercontent.com/BAB2007/yuda-run-helper/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.54.apk",
-    "https://gitee.com/BAB2007/yuda-run-helper/raw/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.54.apk"
+    "https://raw.githubusercontent.com/BAB2007/yuda-run-helper/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.55.apk",
+    "https://gitee.com/BAB2007/yuda-run-helper/raw/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.55.apk"
   ]
 }

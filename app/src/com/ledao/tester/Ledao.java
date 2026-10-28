@@ -870,7 +870,7 @@ public class Ledao {
             } catch (Throwable ignore) { }
             sb.append("← 响应 ").append(respShow == null ? "" : respShow).append("\n");
 
-            java.io.File f = new java.io.File(FACE_PHOTO).getParentFile();
+            java.io.File f = new java.io.File(FILES_DIR);
             java.io.FileOutputStream fo =
                     new java.io.FileOutputStream(new java.io.File(f, "netlog.txt"), true);
             fo.write(sb.toString().getBytes("UTF-8"));
@@ -881,7 +881,7 @@ public class Ledao {
     /** 清空报文记录（每次开始跑步时调，保证 netlog.txt 只装本场） */
     public void resetNetLog() {
         try {
-            java.io.File f = new java.io.File(FACE_PHOTO).getParentFile();
+            java.io.File f = new java.io.File(FILES_DIR);
             java.io.File log = new java.io.File(f, "netlog.txt");
             if (log.exists() && !log.delete()) {
                 java.io.FileOutputStream fo = new java.io.FileOutputStream(log, false);
@@ -3849,22 +3849,26 @@ public class Ledao {
     }
 
     /**
-     * ★ v1.0.24（docs/58）：把**服务端认过**的那张照片另存一份 {@code files/face_ok.jpg}。
+     * ★ v1.0.24（docs/58）：把**服务端认过**的那张照片另存一份
+     * （跑前 {@code files/face_pre_ok.jpg}、跑中 {@code files/face_mid_ok.jpg}）。
      *
      * <p>只在 {@code Run2/faceVerify} 回 {@code status=1} 时调用 —— 也就是说这份备份
      * 是"服务端亲口说行"的证据，不是我们自己觉得行。存的就是当时**发出去的那串字节**
      * （可能是本地小修过的），所以再发一次仍然成立。
      *
-     * <p>失败只是少一条退路，绝不影响本场核验，所以整段包在 catch 里。
+     * <p>★ v1.0.55：备份按 type 分槽，跑前那张绝不会顶到跑中那次去。
+     * 失败只是少一条退路，绝不影响本场核验，所以整段包在 catch 里。
      */
-    private void keepFaceOk(byte[] jpg) {
+    private void keepFaceOk(byte[] jpg, String type) {
+        String name = faceMidType(type) ? FACE_OK_MID_NAME : FACE_OK_NAME;
         try {
-            java.io.FileOutputStream fo = new java.io.FileOutputStream(FACE_OK_PHOTO);
+            java.io.FileOutputStream fo =
+                    new java.io.FileOutputStream(faceOkPathFor(type));
             fo.write(jpg, 0, jpg.length);
             fo.close();
             log.log(String.format(Locale.US,
                     "      [人脸] ✅ 服务端认了这张（%d 字节）—— 已留一份好的备份（files/%s）",
-                    jpg.length, FACE_OK_NAME));
+                    jpg.length, name));
         } catch (Throwable t) {
             log.log("      [人脸] 备份这张好照片失败（不影响本次核验）：" + t);
         }
@@ -3885,11 +3889,14 @@ public class Ledao {
      */
     private String doFaceVerify(JSONObject sts, String prevId, String facesType) {
         try {
-            java.io.File f = new java.io.File(FACE_PHOTO);
+            /* ★★★ v1.0.55：按 type 取对应的那张 —— type=0（起跑前）读 face_pre.jpg，
+             *   中途 type=2 读 face_mid.jpg。两张不一样是用户在界面上设的硬要求。 */
+            java.io.File f = new java.io.File(facePathFor(facesType));
             if (!f.exists() || f.length() == 0) {
                 lastFaceInfo = "";
                 lastFaceStatus = -1;
-                log.log("      ⚠ 还没设置人脸照片（首页「🧑 设置人脸照片（自拍）」）——跳过核验");
+                log.log("      ⚠ 还没设置" + faceSlotLabel(facesType) + "人脸照片（首页「🧑 "
+                        + faceSlotLabel(facesType) + "人脸识别」）——跳过核验");
                 return "";
             }
             // ★★★ 2026-10-08 复核：这里原来是手写的定长读，**不检查是否读满** ——
@@ -3901,7 +3908,7 @@ public class Ledao {
                 lastFaceStatus = -1;
                 log.log("      ❌ 人脸照片读不完整（文件 " + f.length()
                         + " 字节，读回来的字节数对不上）—— 这一枪不发。");
-                log.log("         去首页点「🧑 设置人脸照片」重新选一张原图。");
+                log.log("         去首页点「🧑 " + faceSlotLabel(facesType) + "人脸识别」重新选一张原图。");
                 return "";
             }
             // ★★★ 2026-10-08 19:23 事故逼出来的「照片体检」——
@@ -3935,9 +3942,9 @@ public class Ledao {
             } else if (bad.length() > 0) {
                 log.log("      ⚠ 人脸照片本地体检没过，而且本地修不了（连解码器都解不出一帧图）：" + bad);
             }
-            // ★ 兜底：当前这张救不回来，就发**上一次服务端亲口认过**的那张
+            // ★ 兜底：当前这张救不回来，就发**上一次服务端亲口认过**的那张（同一个槽的）
             if (bad.length() > 0) {
-                byte[] ok = readWhole(new java.io.File(FACE_OK_PHOTO));
+                byte[] ok = readWhole(new java.io.File(faceOkPathFor(facesType)));
                 if (ok != null && jpegDiag(ok).length() == 0 && !java.util.Arrays.equals(ok, jpg)) {
                     log.log(String.format(Locale.US,
                             "      🔁 改用上次通过核验的那张照片（%d 字节）—— 本次核验发的是它，不是刚选的那张",
@@ -3970,7 +3977,8 @@ public class Ledao {
                 log.log("         ★ 最常见的来源：这张图是从云端 / 网盘选的，本地只下了一半"
                         + "（写了一半的文件，尾巴就是一长串 0）。");
                 log.log("           ① 先在系统相册里把它打开、确认能看到一张完整的脸，再回来重选；");
-                log.log("           ② 或者点首页那行「🧑 人脸照片」→「🔧 修复这张」／「↩ 用回上次那张」。");
+                log.log("           ② 或者点首页那行「🧑 " + faceSlotLabel(facesType)
+                        + "人脸识别」→「🔧 试试修复这张」／「↩ 用回上次那张」。");
                 return "";
             }
             int[] sof = jpegSofSize(jpg);
@@ -4067,7 +4075,7 @@ public class Ledao {
                     + info + (st == 1 ? "  ✅ 验脸通过" : "  ❌ 验脸没过"));
             // ★ v1.0.24（docs/58）：服务端**亲口认过**的这张留一份好备份 ——
             //   下次要是选到一张写坏的照片，这份能顶上去，不至于整场跑不了。
-            if (st == 1) keepFaceOk(jpg);
+            if (st == 1) keepFaceOk(jpg, facesType);
             // ★★★ 2026-10-08 20:58 更正 —— 这几句话到底是谁的错，终于用**正对照**定死了。
             //
             //   以前这里写的是「『请稍后重试』= 服务端没能把这张图当图解码，多半是图不完整」。
@@ -4454,23 +4462,76 @@ public class Ledao {
     /** 本场跑步里**至少有一次**人脸核验真的 status==1。收尾时如实报出来。 */
     public volatile boolean faceOk = false;
 
-    private static final String FACE_PHOTO = "/data/data/com.ledao.tester/files/face.jpg";
+    /**
+     * ★★★ v1.0.55（2026-10-28，用户第 66 轮）：人脸照片从**一张**拆成**两张**。
+     *
+     * <p>用户原话：
+     * <ul>
+     *   <li>「将人脸照片设置分成两个按键，分别为'跑前人脸识别'和'跑中人脸识别'」</li>
+     *   <li>「跑前和跑后人脸照片必须不一致」</li>
+     *   <li>「人脸照片背景尽量要在户外(跑步数据好像会人工审查)」</li>
+     * </ul>
+     *
+     * <p>为什么在协议这一侧必须分开：真机一场跑步验**两次**脸 ——
+     * 起跑前 {@code Run2/faceVerify type=0}（docs/28、docs/31 抓包），
+     * 跑到 {@code middle_distance}=600 m 处 {@code type=2}（docs/29 真机时间线）。
+     * 两处发的如果是同一串字节，服务端拿到的就是"同一次拍摄被用了两遍"，
+     * 而两次核验之间隔着几百米、十几分钟 —— 人工审查最先看的就是这个。
+     *
+     * <p>所以现在按 {@code type} 各取各的文件：{@code type=0} 用
+     * {@code face_pre.jpg}，其余（中途 type=2）用 {@code face_mid.jpg}。
+     * 两张都在**跑完这一场之后删掉**（用户第 2 条要求），下一场重新传新的。
+     */
+    public static final String FACE_PRE_NAME = "face_pre.jpg";
+    public static final String FACE_MID_NAME = "face_mid.jpg";
+    private static final String FILES_DIR = "/data/data/com.ledao.tester/files/";
+    private static final String FACE_PRE = FILES_DIR + FACE_PRE_NAME;
+    private static final String FACE_MID = FILES_DIR + FACE_MID_NAME;
 
     /**
-     * ★ v1.0.24（docs/58）：**上次通过服务端核验**的那张照片的备份文件名。
+     * ★ v1.0.24（docs/58）：**上次通过服务端核验**的那张照片的备份文件名（跑前 / 跑中各一份）。
      *
      * <p>为什么值得留一份：用户现在选照片是"原字节直存"，选到一张写了一半 /
      * 云端只下了一半的图（尾部是 0 填充）就可能本地修不好 —— 那时整场跑不了。
      * 只要服务端**亲口认过**一次（status=1），就把当时发的那串字节留一份；
      * 下次当前照片修不好时拿它顶上去，服务端认过的东西再发一次，大概率还认。
      *
+     * <p>★ v1.0.55：备份也跟着分槽 —— 跑前那张的备份绝不能顶到跑中那次去
+     * （那就又变成"两次核验发同一张"了）。
+     *
      * <p>名字放在 Ledao 里给 MainActivity 共用（预览框的「用回上次那张」也要它）。
      */
-    public static final String FACE_OK_NAME = "face_ok.jpg";
+    public static final String FACE_OK_NAME = "face_pre_ok.jpg";
+    public static final String FACE_OK_MID_NAME = "face_mid_ok.jpg";
 
     /** 上次通过核验的那张的完整路径（{@link #keepFaceOk}）。 */
-    private static final String FACE_OK_PHOTO =
-            "/data/data/com.ledao.tester/files/" + FACE_OK_NAME;
+    private static final String FACE_OK_PHOTO = FILES_DIR + FACE_OK_NAME;
+    private static final String FACE_OK_MID_PHOTO = FILES_DIR + FACE_OK_MID_NAME;
+
+    /** 这个槽（{@code "pre"} / {@code "mid"}）的「上次通过核验」备份文件名 */
+    public static String faceOkName(String which) {
+        return "mid".equals(which) ? FACE_OK_MID_NAME : FACE_OK_NAME;
+    }
+
+    /** 本次核验是不是"跑中"那一次（真机 type=0 是起跑前，type=2 是中途） */
+    public static boolean faceMidType(String type) {
+        return type != null && type.length() > 0 && !"0".equals(type);
+    }
+
+    /** 这个 type 该发哪张照片 */
+    private static String facePathFor(String type) {
+        return faceMidType(type) ? FACE_MID : FACE_PRE;
+    }
+
+    /** 这个 type 该用哪份「上次通过核验」的备份 */
+    private static String faceOkPathFor(String type) {
+        return faceMidType(type) ? FACE_OK_MID_PHOTO : FACE_OK_PHOTO;
+    }
+
+    /** 「跑前」/「跑中」—— 日志和按钮文案共用这一个口径 */
+    public static String faceSlotLabel(String type) {
+        return faceMidType(type) ? "跑中" : "跑前";
+    }
 
     private boolean sleep(long ms) {
         long end = System.currentTimeMillis() + ms;
