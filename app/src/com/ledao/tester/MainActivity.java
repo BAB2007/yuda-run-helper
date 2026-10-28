@@ -60,7 +60,24 @@ public class MainActivity extends Activity implements Ledao.Log {
     private static final int REQ_VPN = 8801;
     private static final int REQ_PICK_MARKER = 8802;
     private static final int REQ_PICK_BG = 8803;
-    private static final int REQ_FACE = 8804;      // 人脸核验用的自拍（docs/28）
+    /**
+     * ★★★ v1.0.55（2026-10-28，用户第 66 轮）：人脸照片拆成**两张**，两颗按键各管一张。
+     *
+     * <p>用户四条原话：
+     * <ol>
+     *   <li>「将人脸照片设置分成两个按键，分别为'跑前人脸识别'和'跑中人脸识别'」</li>
+     *   <li>「每次跑完以后都将本次跑步人脸删除」</li>
+     *   <li>「点击'跑前人脸识别'和'跑中人脸识别'按键时弹出提示框，跑前和跑后人脸照片
+     *       必须不一致，人脸照片背景尽量要在户外(跑步数据好像会人工审查)」</li>
+     *   <li>「若两张人脸照片一致，弹出提示框，提示用户重新上传人脸照片」</li>
+     * </ol>
+     *
+     * <p>为什么要两张：真机一场跑步验两次脸（起跑前 type=0、中途 type=2，见 docs/28、
+     * docs/29、docs/31），两次之间隔着几百米、十几分钟。两处发同一张图，服务端拿到的
+     * 就是"同一次拍摄用了两遍"——人工审查一眼就能看出来。
+     */
+    private static final int REQ_FACE_PRE = 8804;  // 跑前那张（type=0）
+    private static final int REQ_FACE_MID = 8806;  // 跑中那张（type=2）
     /**
      * 人脸照片的体积上限。
      *
@@ -122,7 +139,8 @@ public class MainActivity extends Activity implements Ledao.Log {
      *   （{@link #setRunScreenOn}，用的就是视频播放器那个 FLAG_KEEP_SCREEN_ON）。
      *   所以这里不再记"灭了几次、灭了几秒"—— 屏幕本来就不该灭。
      */
-    private Button btnRun, btnSniff, btnClear, btnProxyHelp, btnCopyLog, btnCa, btnRealId, btnFace, btnMini;
+    private Button btnRun, btnSniff, btnClear, btnProxyHelp, btnCopyLog, btnCa, btnRealId,
+            btnFacePre, btnFaceMid, btnMini;
     private Button btnMenu;
     /** 地图卡片的容器 */
     private CampusMapView map;
@@ -165,6 +183,19 @@ public class MainActivity extends Activity implements Ledao.Log {
     private static volatile Thread RUN_WORKER = null;
     /** 当前活着的 Activity —— 旧线程的日志要打到它上面，而不是已经销毁的那个 */
     private static volatile MainActivity LIVE = null;
+
+    /**
+     * ★★★ v1.0.55（用户第 66 轮第 2 条）：「每次跑完以后都将本次跑步人脸删除」。
+     *
+     * <p>为什么是进程级 static：跑步线程属于**发起它的那个 Activity 实例**，
+     * 而界面可能中途被销毁 / 重建；照片是进程的、要删也是进程的，所以标志放这儿。
+     * 只有真走到 {@code L.run(...)} 才会置位 —— 起跑前就退出的那些情况
+     * （身份失效 / 人脸没设好）不该把用户刚传好的照片删掉。
+     */
+    private static volatile boolean FACE_USED_THIS_RUN = false;
+
+    /** ★ v1.0.55：老版那张单张人脸照片只迁一次（进程内） */
+    private boolean legacyFaceChecked = false;
 
     /**
      * ★ v1.0.25：这个界面已经被销毁了（划掉 / 系统回收）。
@@ -275,12 +306,12 @@ public class MainActivity extends Activity implements Ledao.Log {
         log("lpi0=风控令牌 base64(AES-CBC(umid+MD5(timestamp), KEYS[i], IVS[i]))  15组配对表");
         log(Ledao.selfTestLpi0());          // ★ 每次启动自查：必须与真机令牌逐字节一致
         log("------------------------------------------------------------");
-        log("★ 直接点「▶ 开始跑步」：会自动提取身份 → 自动开跑 → 自动收尾。");
+        log("★ 直接点「▶ 开始跑步」：会自动取令牌 → 自动开跑 → 自动收尾。");
         log("  计分条件：≥2.00 km、配速 3'00\"~8'00\"/km、经过 ≥2 个打卡点、当天未跑过");
         log("");
 
         if (isCaInstalled()) {
-            log("✅ CA 证书已就绪 —— 「自动提取」可用");
+            log("✅ CA 证书已就绪 —— 「提取令牌」可用");
         } else {
             log("⚠ 还没装抓包证书 —— 点「🔐 安装证书」，系统弹窗里点「确定」即可");
             if (!sp.getBoolean("ca_prompted", false)) {
@@ -321,14 +352,14 @@ public class MainActivity extends Activity implements Ledao.Log {
          *
          *   以前这里是 `autoExtract(false)`：身份空着就自己去开抓包，而抓包的第一
          *   步就是"把步道乐跑拉起来"—— 于是用户一进助手就被弹到另一个 App 里，
-         *   连"要不要抓"都没得选。用户原话：「只有点「📲 自动提取」才能跳过去」。
+         *   连"要不要抓"都没得选。用户原话：「只有点「📲 提取令牌」才能跳过去」。
          *   现在只提示、不动手：什么时候取身份，由用户点那一行决定。 */
         if (identCache == null || identCache.trim().length() == 0) {
-            log("（身份还是空的）点「📲 自动提取」去取一次 —— 助手不会自己跳到步道乐跑。");
-            setStatus("👋 身份还没取 —— 点「📲 自动提取」（会带你去步道乐跑取一次）");
+            log("（身份还是空的）点「📲 提取令牌」去取一次 —— 助手不会自己跳到步道乐跑。");
+            setStatus("👋 身份还没取 —— 点「📲 提取令牌」（会带你去步道乐跑取一次）");
             ui.postDelayed(() -> {
                 if (isFinishing() || isDestroyed()) return;
-                Toast.makeText(this, "身份还是空的：点「📲 自动提取」去步道乐跑取一次"
+                Toast.makeText(this, "身份还是空的：点「📲 提取令牌」去步道乐跑取一次"
                         + "（助手不会自己跳过去）", Toast.LENGTH_LONG).show();
             }, 1400);
         }
@@ -365,7 +396,8 @@ public class MainActivity extends Activity implements Ledao.Log {
         if (RUN_ACTIVE) setRunBtn(true);
         // ★ v1.0.54：窗口重建（旋转 / 从后台回来）后，按当前状态把「屏幕常亮」补上
         setRunScreenOn(RUN_ACTIVE);
-        updateFaceBtn();          // 人脸照片按钮状态（docs/28）
+        migrateLegacyFacePhoto(); // ★ v1.0.55：老版那张单张照片挪到「跑前」槽（只挪一次）
+        updateFaceBtns();         // ★ v1.0.55：跑前 / 跑中两颗人脸按钮的状态（docs/28）
         updateMiniBtn();          // ★ v1.0.32：迷你小窗（权限 / 开关）状态（docs/64）
         MiniWindow.loadTerm(this); // ★ v1.0.33：把上次存下来的学期次数读回内存（docs/65）
         restoreRunLog();          // ★ v1.0.25：把上一次（或被系统杀掉那次）的日志从磁盘捞回来
@@ -659,20 +691,29 @@ public class MainActivity extends Activity implements Ledao.Log {
         btnRealId.setOnClickListener(v -> captureRealId(false));
         idBox.addView(btnRealId);
 
-        // ★★★ 「人脸照片」—— 真机每次跑步都要做人脸核验（docs/28）：
-        //   拍照 → 上传 OSS Public/Upload/pic/face_verify/… → Run2/faceVerify
-        //        → 响应 data.run_face_verify_id → 收尾时放进 stopRunV278 的
-        //          `run_face_verify_id`。没有这一步，服务端会判「人脸照片验证不合格」。
-        //   这里只需要**设置一次**照片（助手每次跑步自动复用、自动上传）。
-        btnFace = new Button(this);
-        btnFace.setTextSize(10.5f);
-        btnFace.setTextColor(Color.parseColor("#B26A00"));
-        btnFace.setBackgroundColor(Color.TRANSPARENT);
-        btnFace.setPadding(0, dp(2), 0, 0);
-        btnFace.setMinHeight(0);
-        btnFace.setMinimumHeight(0);
-        btnFace.setOnClickListener(v -> facePhotoMenu());
-        idBox.addView(btnFace);
+        /* ★★★ v1.0.55（用户第 66 轮）：人脸照片拆成**两颗键**，各管一张。
+         *
+         *   真机一场跑步要验**两次**脸（docs/28、docs/29、docs/31 抓包实证）：
+         *     起跑前   Run2/faceVerify type=0   → 用「跑前」那张
+         *     中途     Run2/faceVerify type=2   → 用「跑中」那张（跑到 middle_distance）
+         *   两处发同一张图，服务端拿到的就是"同一次拍摄用了两遍"——两次之间隔着
+         *   几百米、十几分钟，人工审查一眼就能看出来。所以现在两张分开设、分开用，
+         *   跑完这一场**两张一起删掉**（用户第 2 条），下一场重新传新的。
+         *
+         *   点任一按键都先弹一个提示框（用户第 3 条）：两张必须不一样、背景尽量在户外、
+         *   跑完就删。存进来的时候再判一次"是不是同一张"（用户第 4 条），是就退回去重选。
+         *
+         *   ★ 排版按用户 2026-10-28 的要求：**一行两个**、字号和下面那排主按钮一样（15sp）、
+         *   糖果色胶囊，按钮上直接显示自己的状态（已设置多少 KB / 未设置）。 */
+        LinearLayout faceRow = UiKit.row(this);
+        LinearLayout.LayoutParams frlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        frlp.setMargins(0, dp(4), 0, dp(2));
+        btnFacePre = faceBtn(SLOT_PRE, Q.LEMON);
+        btnFaceMid = faceBtn(SLOT_MID, Q.CORAL);
+        faceRow.addView(btnFacePre, weight());
+        faceRow.addView(btnFaceMid, weight());
+        idBox.addView(faceRow, frlp);
 
         /* ★★★ v1.0.32（docs/64）：「迷你小窗」这一行。
          *   后台运行在国产 ROM 上根本不由我们说了算（前台服务挂上了，
@@ -717,14 +758,14 @@ public class MainActivity extends Activity implements Ledao.Log {
         slp.setMargins(0, Q.dp(this, 8), 0, Q.dp(this, 2));
         root.addView(tvStatus, slp);
 
-        // ---- ③ 主按钮：开始/停止（同一个键切换）+ 自动提取（Q 版糖果色胶囊）
+        // ---- ③ 主按钮：开始/停止（同一个键切换）+ 提取令牌（Q 版糖果色胶囊）
         LinearLayout row1 = UiKit.row(this);
         LinearLayout.LayoutParams r1lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         r1lp.setMargins(0, dp(7), 0, 0);
         btnRun = mkBtn("▶  开始跑步", AppPrefs.hex(Q.MINT), 15f);
         btnRun.setMinHeight(dp(46));
-        btnSniff = mkBtn("📲  自动提取", AppPrefs.hex(Q.SKY), 15f);
+        btnSniff = mkBtn("📲  提取令牌", AppPrefs.hex(Q.SKY), 15f);
         btnSniff.setMinHeight(dp(46));
         row1.addView(btnRun, weight());
         row1.addView(btnSniff, weight());
@@ -1355,30 +1396,290 @@ public class MainActivity extends Activity implements Ledao.Log {
     }
 
     /**
-     * 人脸照片按钮的文案：已设置就显示尺寸，没设置就提示去拍一张。
+     * ★★★ v1.0.55（用户第 66 轮）：两张人脸照片的两个"槽"。
+     *
+     * <p>{@link #SLOT_PRE} = 起跑前那次核验（{@code type=0}）用的那张，
+     * {@link #SLOT_MID} = 跑到中途那次核验（{@code type=2}）用的那张。
+     * 文件名和 {@link Ledao#FACE_PRE_NAME} / {@link Ledao#FACE_MID_NAME} 一一对应 ——
+     * 上传时由 {@code Ledao.doFaceVerify} 按 type 自己取，界面这边只管存。
+     */
+    private static final String SLOT_PRE = "pre";
+    private static final String SLOT_MID = "mid";
+
+    /** 这个槽的「人话名字」（按钮、弹窗、日志共用一套说法） */
+    private static String slotLabel(String which) {
+        return SLOT_MID.equals(which) ? "跑中" : "跑前";
+    }
+
+    /** 这个槽的照片文件 */
+    private File faceFile(String which) {
+        return new File(getFilesDir(), SLOT_MID.equals(which)
+                ? Ledao.FACE_MID_NAME : Ledao.FACE_PRE_NAME);
+    }
+
+    /** 这个槽修复前的原图（修复功能留的那一份） */
+    private File faceOrigFile(String which) {
+        return new File(getFilesDir(), SLOT_MID.equals(which)
+                ? "face_mid_orig.jpg" : "face_pre_orig.jpg");
+    }
+
+    /** 这个槽的按钮 */
+    private Button faceBtnOf(String which) {
+        return SLOT_MID.equals(which) ? btnFaceMid : btnFacePre;
+    }
+
+    /**
+     * 造一颗「跑前 / 跑中人脸识别」键。
+     *
+     * <p>★ 2026-10-28 用户要求「刷脸按钮改成……一行放两个，字号和下面的相同」：
+     * 所以这里直接走 {@link #mkBtn}（和「开始跑步 / 提取令牌」同一套糖果色胶囊、同样 15sp），
+     * 由调用方 {@code weight()} 平分一行；文案由 {@link #updateFaceBtns()} 统一刷 ——
+     * 它同时是**状态显示**：已设置就报大小，没设置就写"未设置"，两张一样时挂 ⚠。
+     */
+    private Button faceBtn(final String which, int color) {
+        Button b = mkBtn("🧑 " + slotLabel(which) + " 未设置", AppPrefs.hex(color), 15f);
+        b.setMinHeight(dp(44));
+        b.setOnClickListener(v -> faceTipDialog(which));
+        return b;
+    }
+
+    /**
+     * 两颗人脸按钮的文案：已设置就显示尺寸，没设置就写「未设置」。
      *
      * <p>★ v1.0.24（docs/58）：顺手把结构上的毛病**写在按钮上**。以前照片坏了
      * 按钮照样写"已设置"，用户要到起跑前那次核验才知道 —— 而那时候人已经在跑道上，
      * 一整场就废了。现在哪怕只是"尾部有 0 填充"也会挂个 ⚠。
+     *
+     * <p>★ v1.0.55：两颗一起刷；两张照片**一模一样**时两颗都挂「⚠ 一样」——
+     * 这是用户第 4 条要在界面上就能看出来的事。按钮只有半个屏宽，所以文案尽量短。
      */
-    private void updateFaceBtn() {
-        if (btnFace == null) return;        File f = new File(getFilesDir(), "face.jpg");
-        if (f.exists() && f.length() > 0) {
-            String warn = "";
-            byte[] b = readFileBytes(f);
-            if (b != null) {
-                if (Ledao.jpegEoi(b) < 0) warn = "  ⚠ 不完整";
-                else if (Ledao.jpegTailAllZero(b)) warn = "  ⚠ 尾部有 0 填充";
+    private void updateFaceBtns() {
+        boolean same = facePhotosSame();
+        String[][] slots = {{SLOT_PRE, "跑前"}, {SLOT_MID, "跑中"}};
+        for (String[] s : slots) {
+            Button b = faceBtnOf(s[0]);
+            if (b == null) continue;
+            File f = faceFile(s[0]);
+            if (f.exists() && f.length() > 0) {
+                String warn = "";
+                byte[] bytes = readFileBytes(f);
+                if (bytes != null) {
+                    if (Ledao.jpegEoi(bytes) < 0) warn = " ⚠不完整";
+                    else if (Ledao.jpegTailAllZero(bytes)) warn = " ⚠尾部0";
+                }
+                b.setText("🧑 " + s[1] + " " + (f.length() / 1024) + "KB"
+                        + (same ? " ⚠一样" : "") + warn);
+            } else {
+                b.setText("🧑 " + s[1] + " 未设置");
             }
-            btnFace.setText("🧑 人脸照片已设置（" + (f.length() / 1024) + " KB" + warn
-                    + "，点击预览 / 更换）");
-        } else {
-            btnFace.setText("🧑 设置人脸照片（随便一张自拍就行）");
         }
     }
 
-    /** 人脸照片路径 */
-    private File faceFile() { return new File(getFilesDir(), "face.jpg"); }
+    /**
+     * 两张人脸照片是不是"同一张" —— 用户第 4 条的判据。
+     *
+     * <p>两道都算"一样"，因为用户能选出来的"同一张"有两种来源：
+     * <ol>
+     *   <li><b>字节完全一样</b>：同一个文件选两次（最常见的做法）；</li>
+     *   <li><b>内容一样</b>：同一张图被另存 / 被微信转过一手 / 重新压缩过 ——
+     *       字节不同，但缩成 24×24 灰度后几乎逐像素重合。</li>
+     * </ol>
+     * 只比字节会漏掉第 2 种，而那恰恰是最容易发生的一种（用户从两个相册入口选同一张）。
+     *
+     * <p>阈值取"平均灰度差 ≤ 3/255"：同一张图重编码的实测差异在 0~2 之间，
+     * 而两张不同自拍（哪怕同一个人、同一个背景）通常 15 以上。宁可放过，不误杀。
+     */
+    private boolean facePhotosSame() {
+        File a = faceFile(SLOT_PRE), b = faceFile(SLOT_MID);
+        if (!a.exists() || a.length() == 0 || !b.exists() || b.length() == 0) return false;
+        return sameFaceImage(a, b);
+    }
+
+    /** 两个图片文件是不是"同一张脸照"（字节相同，或 24×24 灰度几乎重合） */
+    private static boolean sameFaceImage(File a, File b) {
+        try {
+            byte[] x = readFileBytes(a), y = readFileBytes(b);
+            if (x != null && y != null && java.util.Arrays.equals(x, y)) return true;
+        } catch (Throwable ignore) { }
+        try {
+            float[] p = faceFingerprint(a), q = faceFingerprint(b);
+            if (p == null || q == null) return false;
+            double sum = 0;
+            for (int i = 0; i < p.length; i++) sum += Math.abs(p[i] - q[i]);
+            return sum / p.length <= 3.0;
+        } catch (Throwable t) {
+            return false;              // 比不出来就当"不一样"，绝不因此拦住用户
+        }
+    }
+
+    /**
+     * 缩成 24×24 灰度当指纹（只读，不写盘，不改用户文件）。
+     *
+     * <p>先用 {@code inJustDecodeBounds} 拿尺寸，再按尺寸选 {@code inSampleSize} ——
+     * 一张 4000×3000 的自拍也只解出 ~100×75，几十毫秒就完，不会在界面线程上卡住。
+     */
+    private static float[] faceFingerprint(File f) {
+        try {
+            android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
+            o.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(f.getAbsolutePath(), o);
+            if (o.outWidth <= 0 || o.outHeight <= 0) return null;
+            o.inJustDecodeBounds = false;
+            o.inSampleSize = Math.max(1, Math.min(o.outWidth, o.outHeight) / 96);
+            Bitmap bm = BitmapFactory.decodeFile(f.getAbsolutePath(), o);
+            if (bm == null) return null;
+            Bitmap s = Bitmap.createScaledBitmap(bm, 24, 24, true);
+            float[] out = new float[24 * 24];
+            for (int y = 0; y < 24; y++) {
+                for (int x = 0; x < 24; x++) {
+                    int c = s.getPixel(x, y);
+                    out[y * 24 + x] = 0.299f * Color.red(c)
+                            + 0.587f * Color.green(c) + 0.114f * Color.blue(c);
+                }
+            }
+            if (s != bm) s.recycle();
+            bm.recycle();
+            return out;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * ★★★ v1.0.55：把 v1.0.54 及以前那张**单张**人脸照片（{@code files/face.jpg}）
+     * 挪到「跑前」那个槽。
+     *
+     * <p>为什么要迁：老用户手机上一定还留着那张 {@code face.jpg}（v1.0.54 只有这一张）。
+     * 直接改成读 {@code face_pre.jpg} 的话，他打开新版会发现"照片没了"，得重传一遍 ——
+     * 而他并没有要求删掉原来那张。所以第一次打开新版时把它挪过去，只挪一次。
+     *
+     * <p>跑中那一槽**故意不迁**：两张要不一样，拿同一张填两个槽正是用户第 4 条要禁的事。
+     * 所以跑中那张必须由用户重新传一张新的 —— 挪完这里会明说。
+     */
+    private void migrateLegacyFacePhoto() {
+        if (legacyFaceChecked) return;
+        legacyFaceChecked = true;
+        try {
+            File old = new File(getFilesDir(), "face.jpg");
+            if (!old.exists()) return;
+            File pre = faceFile(SLOT_PRE);
+            String note;
+            if (!pre.exists() || pre.length() == 0) {
+                if (old.renameTo(pre)) {
+                    note = "旧版那张单张人脸照片已挪作「跑前人脸」";
+                } else {
+                    copyFile(old, pre);
+                    old.delete();
+                    note = "旧版那张单张人脸照片已复制成「跑前人脸」";
+                }
+            } else {
+                old.delete();
+                note = "旧版那张单张人脸照片已删除（跑前槽里已经有一张了）";
+            }
+            moveIfAbsent(new File(getFilesDir(), "face_ok.jpg"),
+                    new File(getFilesDir(), Ledao.faceOkName(SLOT_PRE)));
+            moveIfAbsent(new File(getFilesDir(), "face_orig.jpg"), faceOrigFile(SLOT_PRE));
+            log("🧑 " + note + "。现在是**两张**：跑前 + 跑中，两张必须不一样 ——"
+                    + "「跑中人脸识别」那张请重新传一张");
+        } catch (Throwable t) {
+            log("!! 迁移旧版人脸照片失败（不影响使用，大不了重传）：" + t);
+        }
+    }
+
+    /** 文件挪位：目标已有就删源，否则尽量 rename，不行就复制后删源 */
+    private static void moveIfAbsent(File from, File to) {
+        try {
+            if (!from.exists()) return;
+            if (!to.exists() || to.length() == 0) {
+                if (!from.renameTo(to)) {
+                    copyFile(from, to);
+                    from.delete();
+                }
+            } else {
+                from.delete();
+            }
+        } catch (Throwable ignore) { }
+    }
+
+    /**
+     * ★★★ v1.0.55（用户第 2 条）：「每次跑完以后都将本次跑步人脸删除」。
+     *
+     * <p>删的是**整场用过的全部人脸痕迹**：两张当前照片 + 各自的"上次通过核验"备份
+     * + 修复时留的原图 + 选图临时文件。理由和 {@code deleteFacePhoto} 里那条一样 ——
+     * 点"这一场结束了"就等于"这两张脸别留在我手机上"，而备份也是脸。
+     *
+     * <p>顺带把 {@link Ledao} 里缓存的核验凭据清掉：照片没了，旧 id 不该再往上报。
+     */
+    private void wipeFacePhotos(String why) {
+        int n = 0;
+        for (String w : new String[]{SLOT_PRE, SLOT_MID}) {
+            File f = faceFile(w);
+            if (f.exists()) {
+                if (f.delete()) n++;
+            }
+            new File(getFilesDir(), Ledao.faceOkName(w)).delete();
+            faceOrigFile(w).delete();
+        }
+        new File(getFilesDir(), "face_pick.tmp").delete();
+        new File(getFilesDir(), "face_new.jpg").delete();
+        new File(getFilesDir(), "face_pre_new.jpg").delete();
+        new File(getFilesDir(), "face_mid_new.jpg").delete();
+        if (ledao != null) ledao.resetFaceState();
+        log("🧑 " + why + "：两张人脸照片已删除（" + n + " 个文件，含备份）"
+                + " —— 下一场要重新传两张新的");
+        final MainActivity A = LIVE != null ? LIVE : this;
+        ui.post(A::updateFaceBtns);
+    }
+
+    /**
+     * ★★★ v1.0.55：起跑前把两张人脸照片核对一遍，不合格就**不开跑**。
+     *
+     * <p>三件事必须成立：跑前那张在、跑中那张在、两张不是同一张。
+     * 为什么要在开跑前拦：真机这场在 600 m 处还要验一次脸，等跑到那里才发现
+     * "跑中那张没设"，那一场基本就废了（而缺口、暂停、轨迹全都已经发生了）。
+     *
+     * @return true = 可以开跑
+     */
+    private boolean facePreflight() {
+        File pre = faceFile(SLOT_PRE), mid = faceFile(SLOT_MID);
+        boolean hasPre = pre.exists() && pre.length() > 0;
+        boolean hasMid = mid.exists() && mid.length() > 0;
+        String title = null, msg = null;
+        if (!hasPre && !hasMid) {
+            title = "还没设置人脸照片";
+            msg = "这一场要验两次脸，两张照片都要现设：\n\n"
+                + "① 「🧑 跑前人脸识别」—— 起跑前那次核验用的\n"
+                + "② 「🧑 跑中人脸识别」—— 跑到中途那次核验用的（要换一张不一样的）\n\n"
+                + "两张都传好再点「▶ 开始跑步」。跑完这一场两张会自动删除。";
+        } else if (!hasPre) {
+            title = "缺「跑前人脸识别」那张";
+            msg = "跑中那张已经有了，还差起跑前那次要用的 —— "
+                + "点首页「🧑 跑前人脸识别」传一张（户外、正脸）。";
+        } else if (!hasMid) {
+            title = "缺「跑中人脸识别」那张";
+            msg = "跑前那张已经有了，还差跑到中途那次要用的 —— "
+                + "点首页「🧑 跑中人脸识别」传一张，而且必须和跑前那张不一样。";
+        } else if (sameFaceImage(pre, mid)) {
+            title = "两张人脸照片是同一张";
+            msg = "跑前和跑中用同一张照片不行 —— 真机这两次核验隔着几百米、十几分钟，"
+                + "两次拍到一模一样的一帧是不可能的，人工审查最先看的就是这个。\n\n"
+                + "点「🧑 跑前人脸识别」或「🧑 跑中人脸识别」，把其中一张换成别的照片。";
+        }
+        if (msg == null) return true;
+        final String t = title, m = msg;
+        log("⚠ 人脸照片没就绪（" + t + "）—— 这一场不开跑");
+        ui.post(() -> {
+            try {
+                new android.app.AlertDialog.Builder(this)
+                        .setTitle("🧑 " + t)
+                        .setMessage(m)
+                        .setPositiveButton("知道了", null)
+                        .show();
+            } catch (Throwable ignore) { }
+        });
+        Toast.makeText(this, t, Toast.LENGTH_LONG).show();
+        return false;
+    }
 
     // ==================================================================
     //  后台运行（v1.0.25，docs/59）
@@ -1747,43 +2048,119 @@ public class MainActivity extends Activity implements Ledao.Log {
     }
 
     /** 选人脸照片（走 ACTION_GET_CONTENT 而不是相机，助手没有相机权限） */
-    private void pickFacePhoto() {
+    private void pickFacePhoto(final String which) {
         if (RUN_ACTIVE) { log("⚠ 跑步进行中，先停掉再换照片"); return; }
         try {
             Intent i = new Intent(Intent.ACTION_GET_CONTENT);
             i.setType("image/*");
             i.addCategory(Intent.CATEGORY_OPENABLE);
-            startActivityForResult(Intent.createChooser(i, "选一张正脸自拍"), REQ_FACE);
+            startActivityForResult(Intent.createChooser(i, SLOT_MID.equals(which)
+                            ? "选一张「跑中」正脸照（户外）"
+                            : "选一张「跑前」正脸照（户外）"),
+                    SLOT_MID.equals(which) ? REQ_FACE_MID : REQ_FACE_PRE);
         } catch (Throwable t) {
             Toast.makeText(this, "打不开图片选择器：" + t, Toast.LENGTH_LONG).show();
         }
     }
 
     /**
-     * 人脸照片按钮：没设置就选图，已设置就弹预览框（里面能更换 / 删除）。
+     * ★★★ v1.0.55（用户第 3 条）：点「跑前人脸识别」/「跑中人脸识别」先弹这个提示框。
+     *
+     * <p>用户原话：「点击'跑前人脸识别'和'跑中人脸识别'按键时弹出提示框，
+     * 跑前和跑后人脸照片必须不一致，人脸照片背景尽量要在户外(跑步数据好像会人工审查)」。
+     *
+     * <p>为什么必须弹：这两件事**做错了也看不出来** —— 两张一样的照片照样能传上去、
+     * 照样能开跑，等到服务端回 59「人脸照片验证不合格」或者被人工审查时才知道，
+     * 而那时候一场 20 分钟已经白跑了。所以规矩要在**点按键的那一刻**说，
+     * 而不是藏在文档里。
+     *
+     * <p>框里同时是操作入口：没设置就是「选照片」，已设置就是「换一张 / 预览这张 / 删除」。
      */
-    private void facePhotoMenu() {
-        File f = faceFile();
-        if (f.exists() && f.length() > 0) previewFacePhoto();
-        else pickFacePhoto();
+    private void faceTipDialog(final String which) {
+        final File f = faceFile(which);
+        final boolean has = f.exists() && f.length() > 0;
+        final String other = SLOT_MID.equals(which) ? SLOT_PRE : SLOT_MID;
+        final File of = faceFile(other);
+        final boolean hasOther = of.exists() && of.length() > 0;
+        final boolean same = has && hasOther && sameFaceImage(f, of);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(12), dp(18), dp(6));
+
+        TextView tips = new TextView(this);
+        tips.setTextSize(12.5f);
+        tips.setTextColor(Q.INK);                 // ★ Q 版：墨色字
+        tips.setLineSpacing(dp(3), 1f);
+        StringBuilder sb = new StringBuilder();
+        sb.append(SLOT_MID.equals(which)
+                ? "跑中这张 = 跑到中途那次核验用的（服务端指定的距离处）。\n"
+                : "跑前这张 = 起跑前那次核验用的（进跑步页就验）。\n");
+        sb.append("两次核验发的是两张不同的照片。\n\n");
+        sb.append("【1】两张必须不一样\n");
+        sb.append("· 跑前、跑中要各传一张不同的照片；\n");
+        sb.append("· 两张一样 = 同一次拍摄被用了两遍，人工审查最容易看出来的就是这里。\n\n");
+        sb.append("【2】一定要在户外\n");
+        sb.append("· 跑步数据会有人工审查，而且传上去的是整张照片："
+                + "室内白墙 / 床单 / 天花板 和「在校园里跑步」对不上，直接不通过；\n");
+        sb.append("· 就去操场、路边、树下拍 —— 画面里要能看见天空 / 楼 / 树 / 跑道；\n");
+        sb.append("· 光线要足、脸占满画面，别戴帽子墨镜、别用重美颜。\n\n");
+        sb.append("【3】只在本场用一次\n");
+        sb.append("· 这一场跑完，两张照片都会自动删除；\n");
+        sb.append("· 下一场要重新传两张新的（换来换去才像真人每次现拍）。\n");
+        tips.setText(sb.toString());
+        box.addView(tips);
+
+        TextView st = new TextView(this);
+        st.setTextSize(12f);
+        st.setLineSpacing(dp(2), 1f);
+        st.setPadding(0, dp(8), 0, dp(2));
+        StringBuilder ss = new StringBuilder();
+        ss.append("现在：").append(slotLabel(which)).append("这张 ")
+                .append(has ? ("已设置（" + (f.length() / 1024) + " KB）")
+                            : "还没设置");
+        ss.append("\n另一张（").append(slotLabel(other)).append("）")
+                .append(hasOther ? "已设置" : "还没设置");
+        if (same) ss.append("\n⚠ 两张现在是同一张照片 —— 必须换掉其中一张");
+        st.setText(ss.toString());
+        st.setTextColor(same ? Q.DANGER : Q.INK2);
+        box.addView(st);
+
+        android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(this)
+                .setTitle("🧑 " + slotLabel(which) + "人脸识别")
+                .setView(box);
+        if (has) {
+            b.setPositiveButton("换一张", (d, w) -> pickFacePhoto(which))
+             .setNeutralButton("预览这张", (d, w) -> previewFacePhoto(which))
+             .setNegativeButton("删除", (d, w) -> deleteFacePhoto(which));
+        } else {
+            b.setPositiveButton("选照片", (d, w) -> pickFacePhoto(which))
+             .setNegativeButton("取消", null);
+        }
+        android.app.AlertDialog dlg = b.create();
+        dlg.show();
+        Q.style(this, dlg);                       // ★ Q 版：圆角白卡
     }
 
     /**
      * 人脸照片预览框 —— 看一眼存下来的到底是什么，再决定留不留。
      *
      * <p>为什么要它：照片是**原字节直存**的（见 {@link #installFacePhoto}），
-     * 选错了自己不知道 —— 服务端要到跑前那次核验才会说「未拍到完整人脸」。
+     * 选错了自己不知道 —— 服务端要到那次核验才会说「未拍到完整人脸」。
      * 这里至少能让人在跑之前就看清自己选的是哪张。
+     *
+     * <p>★ v1.0.55：按槽预览（跑前 / 跑中），备份和"修复"也跟着各自的槽走。
      */
-    private void previewFacePhoto() {
-        final File f = faceFile();
-        if (!f.exists() || f.length() == 0) { pickFacePhoto(); return; }
+    private void previewFacePhoto(final String which) {
+        final File f = faceFile(which);
+        if (!f.exists() || f.length() == 0) { pickFacePhoto(which); return; }
         try {
             final Bitmap bm = BitmapFactory.decodeFile(f.getAbsolutePath());
             final byte[] fb = readFileBytes(f);            // ★ v1.0.24：结构诊断要用它
             final String diag = fb == null ? "" : Ledao.jpegDiag(fb);
             final int[] sof = fb == null ? null : Ledao.jpegSofSize(fb);
-            final File okF = new File(getFilesDir(), Ledao.FACE_OK_NAME);
+            final File okF = new File(getFilesDir(), Ledao.faceOkName(which));
+            final File other = faceFile(SLOT_MID.equals(which) ? SLOT_PRE : SLOT_MID);
             LinearLayout box = new LinearLayout(this);
             box.setOrientation(LinearLayout.VERTICAL);
             box.setPadding(dp(16), dp(12), dp(16), dp(4));
@@ -1811,7 +2188,8 @@ public class MainActivity extends Activity implements Ledao.Log {
             info.setTextSize(12.5f);
             info.setTextColor(Q.INK);             // ★ Q 版：墨色字
             info.setLineSpacing(dp(2), 1f);
-            info.setText("文件  " + f.getAbsolutePath() + "\n"
+            info.setText("这张是「" + slotLabel(which) + "」那次核验用的\n"
+                    + "文件  " + f.getAbsolutePath() + "\n"
                     + "大小  " + (f.length() / 1024) + " KB"
                     + (bm != null ? "　尺寸  " + bm.getWidth() + "×" + bm.getHeight() : "")
                     + (sof != null ? "　图里声明 " + sof[0] + "×" + sof[1] : "")
@@ -1819,7 +2197,10 @@ public class MainActivity extends Activity implements Ledao.Log {
                         ? ("JPEG 完整，" + Ledao.jpegTailDesc(fb))
                         : ("⚠ " + diag))
                     + "\n原样存下来的，没有裁剪、没有压缩、没有检测人脸。\n"
-                    + "服务端要的是「脸占满画面」的近照，跑前那次核验才会给结论。"
+                    + "服务端要的是「脸占满画面」的近照；这一张只在本场用一次，跑完就删。"
+                    + (other.exists() && other.length() > 0 && sameFaceImage(f, other)
+                        ? "\n\n⚠ 这张和「" + slotLabel(SLOT_MID.equals(which) ? SLOT_PRE : SLOT_MID)
+                          + "」那张是同一张照片 —— 必须换掉其中一张。" : "")
                     + (okF.exists() && okF.length() > 0
                         ? "\n上次通过核验的那张还留着备份（" + (okF.length() / 1024) + " KB）。"
                         : ""));
@@ -1833,7 +2214,7 @@ public class MainActivity extends Activity implements Ledao.Log {
                 Button fix = qBtnWide("🔧 试试修复这张（能修就修，原图留一份）", Q.LEMON, 12.5f);
                 fix.setOnClickListener(v -> {
                     if (holder[0] != null) holder[0].dismiss();
-                    repairFacePhoto();
+                    repairFacePhoto(which);
                 });
                 box.addView(fix);
             }
@@ -1841,16 +2222,16 @@ public class MainActivity extends Activity implements Ledao.Log {
                 Button useOk = qBtnWide("↩ 用回上次通过核验的那张", Q.MINT, 12.5f);
                 useOk.setOnClickListener(v -> {
                     if (holder[0] != null) holder[0].dismiss();
-                    useFaceOkPhoto();
+                    useFaceOkPhoto(which);
                 });
                 box.addView(useOk);
             }
 
             android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(this)
-                    .setTitle("人脸照片预览")
+                    .setTitle("🧑 " + slotLabel(which) + "人脸照片预览")
                     .setView(box)
-                    .setPositiveButton("更换这张", (d, w) -> pickFacePhoto())
-                    .setNeutralButton("删除", (d, w) -> deleteFacePhoto())
+                    .setPositiveButton("更换这张", (d, w) -> pickFacePhoto(which))
+                    .setNeutralButton("删除", (d, w) -> deleteFacePhoto(which))
                     .setNegativeButton("关闭", null)
                     .create();
             holder[0] = dlg;
@@ -1862,20 +2243,23 @@ public class MainActivity extends Activity implements Ledao.Log {
     }
 
     /**
-     * ★ v1.0.24（docs/58）：把当前的人脸照片**就地修一次**，修完写回 files/face.jpg。
+     * ★ v1.0.24（docs/58）：把当前这张人脸照片**就地修一次**，修完写回原来的槽。
      *
      * <p>两种修法（{@link Ledao#faceJpegFix} 里的顺序就是优先级）：
      * <ol>
      *   <li><b>无损</b>：EOI 之后是纯 0 填充 → 裁掉那截（图片本体一个字节不动）</li>
      *   <li><b>有损</b>：结构上写坏了（缺 EOI）→ 本地解码 → 按解出来的部分重编码成完整 JPEG</li>
      * </ol>
-     * 原图另存一份 {@code files/face_orig.jpg}：不动用户原始数据，想删随时能删。
+     * 原图另存一份 {@code files/face_pre_orig.jpg} / {@code files/face_mid_orig.jpg}：
+     * 不动用户原始数据，想删随时能删。
      * 修完清掉本机缓存的核验凭据（照片换了，凭据必须作废）。
      */
-    private void repairFacePhoto() {
-        final File f = faceFile();
-        if (!f.exists() || f.length() == 0) { pickFacePhoto(); return; }
-        log("🧑 开始修复人脸照片…（原图会留一份 face_orig.jpg，不会丢）");
+    private void repairFacePhoto(final String which) {
+        final File f = faceFile(which);
+        if (!f.exists() || f.length() == 0) { pickFacePhoto(which); return; }
+        final File orig = faceOrigFile(which);
+        log("🧑 开始修复「" + slotLabel(which) + "」那张…（原图会留一份 "
+                + orig.getName() + "，不会丢）");
         new Thread(() -> {
             try {
                 byte[] cur = readFileBytes(f);
@@ -1893,19 +2277,18 @@ public class MainActivity extends Activity implements Ledao.Log {
                             "这张修不了，换一张吧", Toast.LENGTH_LONG).show());
                     return;
                 }
-                File orig = new File(getFilesDir(), "face_orig.jpg");
                 if (!orig.exists() || orig.length() == 0) copyFile(f, orig);
                 FileOutputStream fo = new FileOutputStream(f);
                 fo.write(fix.bytes, 0, fix.bytes.length);
                 fo.close();
                 if (ledao != null) ledao.resetFaceState();   // 照片变了，旧凭据作废
                 log(String.format(Locale.US,
-                        "✅ 人脸照片已修复：%d KB → %d KB%s",
-                        cur.length / 1024, fix.bytes.length / 1024,
+                        "✅ 「%s」那张已修复：%d KB → %d KB%s",
+                        slotLabel(which), cur.length / 1024, fix.bytes.length / 1024,
                         fix.lossy ? "（重新编码过，画质略有损失）" : "（无损，图片本体没动）"));
                 log("   修的内容：" + fix.note);
-                log("   原图留在 files/face_orig.jpg（想删就用「删除」那颗，一起删掉）。");
-                ui.post(this::updateFaceBtn);
+                log("   原图留在 files/" + orig.getName() + "（想删就用「删除」那颗，一起删掉）。");
+                ui.post(this::updateFaceBtns);
             } catch (Throwable e) {
                 logFail("修复人脸照片", e);
             }
@@ -1913,34 +2296,54 @@ public class MainActivity extends Activity implements Ledao.Log {
     }
 
     /**
-     * ★ v1.0.24（docs/58）：把**上次通过服务端核验**的那张（files/face_ok.jpg）
+     * ★ v1.0.24（docs/58）：把**上次通过服务端核验**的那张
+     * （{@code files/face_pre_ok.jpg} / {@code files/face_mid_ok.jpg}）
      * 拿回来当当前照片 —— 当前这张救不回来时的最后一条路。
+     *
+     * <p>★ v1.0.55：备份分槽；换回来之后还要再判一次"是不是和另一张一样"
+     * （一样就白换，用户第 4 条不允许两张相同）。
      */
-    private void useFaceOkPhoto() {
-        final File ok = new File(getFilesDir(), Ledao.FACE_OK_NAME);
+    private void useFaceOkPhoto(final String which) {
+        final File ok = new File(getFilesDir(), Ledao.faceOkName(which));
         if (!ok.exists() || ok.length() == 0) {
-            log("🧑 还没有「上次通过核验」的备份（得先有一场核验通过才会有）");
+            log("🧑 「" + slotLabel(which) + "」还没有「上次通过核验」的备份"
+                    + "（得先有一场核验通过才会有）");
             return;
         }
         try {
-            copyFile(ok, faceFile());
+            final File dst = faceFile(which);
+            final File other = faceFile(SLOT_MID.equals(which) ? SLOT_PRE : SLOT_MID);
+            if (other.exists() && other.length() > 0 && sameFaceImage(ok, other)) {
+                log("!! 这份备份和「" + slotLabel(SLOT_MID.equals(which) ? SLOT_PRE : SLOT_MID)
+                        + "」那张是同一张 —— 不能用（两张必须不一样），还是重新选一张吧");
+                Toast.makeText(this, "备份和另一张一样，不能用，重新选一张",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            copyFile(ok, dst);
             new File(getFilesDir(), "face_pick.tmp").delete();
             if (ledao != null) ledao.resetFaceState();
-            byte[] b = readFileBytes(faceFile());
+            byte[] b = readFileBytes(dst);
             log(String.format(Locale.US,
-                    "✅ 已换回上次通过核验的那张照片（%d KB）%s",
-                    ok.length() / 1024,
+                    "✅ 「%s」已换回上次通过核验的那张照片（%d KB）%s",
+                    slotLabel(which), ok.length() / 1024,
                     b == null ? "" : "；结构 " + (Ledao.jpegDiag(b).length() == 0
                             ? "完整（" + Ledao.jpegTailDesc(b) + "）" : "⚠ " + Ledao.jpegDiag(b))));
-            updateFaceBtn();
+            updateFaceBtns();
         } catch (Throwable t) {
             logFail("换回上次通过核验的照片", t);
         }
     }
 
-    /** 删掉人脸照片，并把 Ledao 里缓存的核验凭据一起清掉 */
-    private void deleteFacePhoto() {
-        File f = faceFile();
+    /**
+     * 删掉**这一个槽**的人脸照片，并把 Ledao 里缓存的核验凭据一起清掉。
+     *
+     * <p>★ v1.0.24：备份也要一起删 —— 用户点「删除」的意思就是"别留我的自拍"，
+     * 留着备份等于偷偷藏了一张（这是隐私，不是缓存）。
+     * ★ v1.0.55：只删这一槽，另一槽不动（两颗键各管各的）。
+     */
+    private void deleteFacePhoto(final String which) {
+        File f = faceFile(which);
         boolean had = f.exists();
         if (had && !f.delete()) {
             Toast.makeText(this, "删不掉：" + f.getAbsolutePath(), Toast.LENGTH_LONG).show();
@@ -1949,21 +2352,23 @@ public class MainActivity extends Activity implements Ledao.Log {
         // 顺手清掉选图时留下的临时文件
         new File(getFilesDir(), "face_pick.tmp").delete();
         new File(getFilesDir(), "face_new.jpg").delete();
-        /* ★ v1.0.24：备份也要一起删 —— 用户点「删除」的意思就是"别留我的自拍"，
-         *   留着 face_ok.jpg / face_orig.jpg 等于偷偷藏了两张（这是隐私，不是缓存）。 */
-        new File(getFilesDir(), Ledao.FACE_OK_NAME).delete();
-        new File(getFilesDir(), "face_orig.jpg").delete();
+        new File(getFilesDir(), Ledao.faceOkName(which)).delete();
+        faceOrigFile(which).delete();
         if (ledao != null) ledao.resetFaceState();
-        updateFaceBtn();
-        if (had) log("🧑 人脸照片已删除 —— 下次跑步不会做刷脸核验了"
-                + "（连 files/face_ok.jpg、face_orig.jpg 一起删了，不留备份）");
-        else log("🧑 本来就没有人脸照片");
-        Toast.makeText(this, had ? "已删除人脸照片" : "没有可删的人脸照片",
+        updateFaceBtns();
+        if (had) log("🧑 「" + slotLabel(which) + "」人脸照片已删除 —— 这一场不会做那次核验了"
+                + "（连它的备份、原图一起删了，不留）");
+        else log("🧑 「" + slotLabel(which) + "」本来就没有人脸照片");
+        Toast.makeText(this, had ? ("已删除「" + slotLabel(which) + "」那张") : "没有可删的人脸照片",
                 Toast.LENGTH_SHORT).show();
     }
 
     /**
-     * 把选中的照片**原字节**存成 files/face.jpg —— 不做任何处理。
+     * 把选中的照片**原字节**存进对应的槽 —— 不做任何处理。
+     *
+     * <p>★ v1.0.55：槽由 {@code which}（{@link #SLOT_PRE} / {@link #SLOT_MID}）决定，
+     * 存成 {@code files/face_pre.jpg} 或 {@code files/face_mid.jpg}。
+     * 落盘之前还要过用户第 4 条那道关：**和另一张一样就退回去重选**。
      *
      * <h3>★ 2026-10-10 按用户要求改简单了</h3>
      * 原来是条重管线：解码 → {@code android.media.FaceDetector} 找脸 →
@@ -1984,13 +2389,15 @@ public class MainActivity extends Activity implements Ledao.Log {
      * <p>仍然保留一道**不做任何修改**的体检：{@code doFaceVerify} 上传前会看
      * SOI/EOI 是否完整、体积是否异常 —— 那只读不写。
      */
-    private void installFacePhoto(final Uri src) {
-        final File dst = faceFile();
-        log("🧑 保存人脸照片…（原字节直存，不做检测 / 不裁剪 / 不压缩）");
+    private void installFacePhoto(final Uri src, final String which) {
+        final File dst = faceFile(which);
+        final String other = SLOT_MID.equals(which) ? SLOT_PRE : SLOT_MID;
+        log("🧑 保存「" + slotLabel(which) + "」人脸照片…（原字节直存，不做检测 / 不裁剪 / 不压缩）");
         new Thread(() -> {
             try {
                 /* 先落到临时文件再原子改名 —— 中途失败不会把已有照片毁掉 */
-                final File tmp = new File(getFilesDir(), "face_new.jpg");
+                final File tmp = new File(getFilesDir(),
+                        SLOT_MID.equals(which) ? "face_mid_new.jpg" : "face_pre_new.jpg");
                 long total = 0;
                 java.io.InputStream in = getContentResolver().openInputStream(src);
                 if (in == null) {
@@ -2054,20 +2461,66 @@ public class MainActivity extends Activity implements Ledao.Log {
                 } catch (Throwable ignore) {
                     /* 体检失败绝不影响保存本身 —— 照片已经在 tmp 里了 */
                 }
+                /* ★★★ v1.0.55（用户第 4 条）：两张照片**不能是同一张**。
+                 *
+                 *   为什么落盘前就要拦（而不是等跑前那次核验）：两张一样照样能传、
+                 *   照样能开跑，服务端也不一定当场拒 —— 等它回 59 或者被人审看出来，
+                 *   一场 20 分钟已经白跑了。所以这里当场拦住，并且说清楚为什么。
+                 *
+                 *   判据见 {@link #sameFaceImage}：字节一样算一样；同一张图被另存 /
+                 *   转过一手（字节不同、内容一样）也算 —— 后者才是真正常见的那种。 */
+                final File otherFile = faceFile(other);
+                if (otherFile.exists() && otherFile.length() > 0
+                        && sameFaceImage(tmp, otherFile)) {
+                    tmp.delete();
+                    log("!! 这张和「" + slotLabel(other) + "」那张是同一张照片 —— "
+                            + "两张必须不一样，这次没存（原来那张照片没有被改动）");
+                    ui.post(() -> showSameFaceDialog(which));
+                    return;
+                }
                 long before = dst.exists() ? dst.length() : 0;
                 if (dst.exists() && !dst.delete()) log("   （旧照片没删掉，直接覆盖）");
                 if (!tmp.renameTo(dst)) { copyFile(tmp, dst); tmp.delete(); }
                 new File(getFilesDir(), "face_pick.tmp").delete();
+                new File(getFilesDir(), SLOT_MID.equals(which) ? "face_pre_new.jpg" : "face_mid_new.jpg").delete();
                 if (ledao != null) ledao.resetFaceState();     // 换了照片，旧的核验凭据作废
                 log(String.format(Locale.US,
-                        "✅ 人脸照片已保存：%s  %d KB（原 %d KB）—— 未经任何处理%s",
-                        dst.getAbsolutePath(), dst.length() / 1024, before / 1024, jpegNote));
-                log("   点首页那行「🧑 人脸照片」可以预览 / 更换 / 删除。");
-                ui.post(this::updateFaceBtn);
+                        "✅ 「%s」人脸照片已保存：%s  %d KB（原 %d KB）—— 未经任何处理%s",
+                        slotLabel(which), dst.getAbsolutePath(), dst.length() / 1024,
+                        before / 1024, jpegNote));
+                log("   点首页「🧑 " + slotLabel(which) + "人脸识别」可以预览 / 更换 / 删除。");
+                ui.post(this::updateFaceBtns);
             } catch (Throwable e) {
                 logFail("保存人脸照片", e);
             }
         }, "face-photo").start();
+    }
+
+    /**
+     * ★★★ v1.0.55（用户第 4 条）：两张人脸照片一样时弹这个框，让用户重新传。
+     *
+     * <p>把"为什么不能一样"说透，比只说"请重新上传"有用 —— 用户不知道原因，
+     * 下次还会从同一个相册入口把同一张再选一次。
+     */
+    private void showSameFaceDialog(final String which) {
+        final String other = SLOT_MID.equals(which) ? SLOT_PRE : SLOT_MID;
+        try {
+            android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(this)
+                    .setTitle("🧑 两张人脸照片一样了")
+                    .setMessage("你选的这张，和「" + slotLabel(other) + "」那张是同一张照片。\n\n"
+                            + "跑前和跑中必须是两张不同的照片：真机这两次核验隔着几百米、"
+                            + "十几分钟，两次拍到一模一样的一帧是不可能的 —— 人工审查最先看"
+                            + "的就是这个，被看出来的话这一场可能白跑。\n\n"
+                            + "换一张不一样的照片（同一张图另存 / 重发过也算同一张）。")
+                    .setPositiveButton("重新选一张", (d, w) -> pickFacePhoto(which))
+                    .setNegativeButton("知道了", null)
+                    .create();
+            dlg.show();
+            Q.style(this, dlg);
+        } catch (Throwable t) {
+            logFail("弹「两张一样」提示", t);
+        }
+        Toast.makeText(this, "两张一样，请换一张不一样的", Toast.LENGTH_LONG).show();
     }
 
 
@@ -2391,14 +2844,23 @@ public class MainActivity extends Activity implements Ledao.Log {
         if (raw.length() == 0) {
             /* ★★★ v1.0.33（用户第 4 条）：这里原来是 `autoExtract(true)` ——
              *   会自己把步道乐跑拉起来抓身份。用户明确要求：**跳转只由
-             *   「📲 自动提取」发起**，助手不许自作主张跳到别的 App 里。
+             *   「📲 提取令牌」发起**，助手不许自作主张跳到别的 App 里。
              *   所以现在只把该点哪一步说清楚。 */
-            log("⚠ 手上还没有身份 —— 先点「📲 自动提取」（它会带你去步道乐跑取一次），"
+            log("⚠ 手上还没有身份 —— 先点「📲 提取令牌」（它会带你去步道乐跑取一次），"
                     + "取到之后再点「▶ 开始跑步」。");
-            setStatus("⚠ 先点「📲 自动提取」取身份，再点「▶ 开始跑步」");
-            Toast.makeText(this, "先点「📲 自动提取」取一次身份", Toast.LENGTH_LONG).show();
+            setStatus("⚠ 先点「📲 提取令牌」取身份，再点「▶ 开始跑步」");
+            Toast.makeText(this, "先点「📲 提取令牌」取一次身份", Toast.LENGTH_LONG).show();
             return;
         }
+
+        /* ★★★ v1.0.55（用户第 66 轮）：起跑前先核对两张人脸照片。
+         *   条件：跑前那张在 / 跑中那张在 / 两张不是同一张。
+         *   为什么要在这里拦 —— 这一场在 600 m 处还要验一次脸，等跑到那里才发现
+         *   "跑中那张没设"或者"两张一样"，缺口和暂停都已经发生了，改不了；
+         *   而服务端对"核验链不完整"的判罚是一场直接不算数（status=59）。
+         *   缺了就当场说清楚缺哪张、点哪颗键，不开跑。 */
+        if (!facePreflight()) return;
+        FACE_USED_THIS_RUN = false;        // 这一场还没真的用掉照片（用了才删）
 
         // ★ 界面优化 #1（2026-10-07）：手动设置已删除，**只有系统自动一种模式**。
         //   里程 2.0~5.0 随机（步进 0.1，看起来更像随手定的目标）；
@@ -2624,17 +3086,17 @@ public class MainActivity extends Activity implements Ledao.Log {
                     log("⚠ 手上的令牌已作废（" + msg + "）");
                     /* ★★★ v1.0.33（用户第 4 条）：这里原来会**自己跳去抓包**
                      *   （打开步道乐跑、抓完自动切回来接着跑，最多两轮）。
-                     *   用户明确要求"只有点「自动提取」才能跳过去" ——
+                     *   用户明确要求"只有点「提取令牌」才能跳过去" ——
                      *   所以现在只把该点的三步说清楚，助手不动手。 */
                     log("   → 请按下面三步走：① 打开一次步道乐跑（进到首页就行）"
-                            + "  ② 切回来点「📲 自动提取」  ③ 再点「▶ 开始跑步」");
+                            + "  ② 切回来点「📲 提取令牌」  ③ 再点「▶ 开始跑步」");
                     setStatus("❌ 令牌失效了 —— 请按弹窗里的三步重新取一次身份");
                     reportError("身份被顶掉了，需要重新取一次",
                             "手上的令牌已经被服务端判失效（" + msg + "）。\n"
                           + "最常见的原因：步道乐跑在后台把会话刷走了"
                           + "—— 它是单会话登录，两边同时在线就会互相顶。",
                             "① 打开一次步道乐跑（正常登录、进到首页就行）\n"
-                          + "② 切回助手，点「📲 自动提取」\n"
+                          + "② 切回助手，点「📲 提取令牌」\n"
                           + "③ 抓完再点「▶ 开始跑步」");
                     return;
                 });
@@ -2650,6 +3112,13 @@ public class MainActivity extends Activity implements Ledao.Log {
              *   在跑区质心附近随机 + 全轨迹 3~5 m 平移决定，见 Ledao#run）。 */
             double[] stRef = RouteView.CAMPUS[new java.util.Random().nextInt(RouteView.CAMPUS.length)];
             Ledao.Result r = L.run(fKm, vSlow, vFast, TICK_SEC, stRef[0], stRef[1]);
+            /* ★★★ v1.0.55（用户第 2 条）：这一场只要**用过**人脸照片，跑完就把两张删掉。
+             *   两个置位点：
+             *     ① 跑前那次核验通过（{@link #onFacePre}，最常见的一条路）；
+             *     ② 这一场真跑出了有效里程 —— 服务端若配 start_status=0，可能一次脸都没验，
+             *        但只要真跑成了，这两张照片也是"本场的"，按用户要求一起删。
+             *   标志在 finally 里被消费，见 {@link #wipeFacePhotos}。 */
+            if (r.distance != null && r.distance.length() > 0) FACE_USED_THIS_RUN = true;
             persistIdent(L);
             ui.post(() -> {
                 log("");
@@ -2734,6 +3203,19 @@ public class MainActivity extends Activity implements Ledao.Log {
                 RUN_ACTIVE = false;
                 RUN_LEDAO = null;
                 RUN_WORKER = null;
+                /* ★★★ v1.0.55（用户第 2 条）：「每次跑完以后都将本次跑步人脸删除」。
+                 *
+                 *   放在 finally 里：正常跑完、出错、用户点停止，三种收场一样删 ——
+                 *   只要这一场真的把照片用出去了（FACE_USED_THIS_RUN），就别留着。
+                 *   删的是两张当前照片 + 各自备份 + 修复留的原图（见 wipeFacePhotos）。
+                 *   下一场必须重新传两张新的：这也是"两张必须不一样"这条规矩在时间上
+                 *   的延伸 —— 同一张脸照连着几场反复出现，人工审查一眼就能串起来。 */
+                if (FACE_USED_THIS_RUN) {
+                    FACE_USED_THIS_RUN = false;
+                    try {
+                        wipeFacePhotos("本场结束");
+                    } catch (Throwable ignore) { }
+                }
                 /* ★ v1.0.25：这一场结束了（正常 / 出错 / 用户点停止都是这里）——
                  *   放掉唤醒锁、收掉日志文件、把通知改回"抓包"那句话。
                  *   必须放在 finally：不然出错退出会把锁一直攥着耗电。 */
@@ -2956,11 +3438,11 @@ public class MainActivity extends Activity implements Ledao.Log {
     }
 
     // ==================================================================
-    //  自动提取身份
+    //  提取令牌（原「自动提取」）
     // ==================================================================
     private void updateSniffBtn() {
         boolean on = LocalProxy.listening();
-        btnSniff.setText(on ? "⏹  停止提取" : "📲  自动提取");
+        btnSniff.setText(on ? "⏹  停止提取" : "📲  提取令牌");
         paintBtn(btnSniff, on ? AppPrefs.hex(Q.DANGER) : AppPrefs.hex(Q.SKY));
         // ↑ 走 paintBtn：原色要留在 tag 上（Q 版 = 停止红 / 天蓝胶囊）
     }
@@ -2981,7 +3463,7 @@ public class MainActivity extends Activity implements Ledao.Log {
         // ★ 身份串现在是普通字段（以前是 TextView，必须回 UI 线程读才安全）
         final String identRaw = identCache == null ? "" : identCache.trim();
         log("");
-        log("========== 自动提取身份 ==========");
+        log("========== 提取令牌 ==========");
         setStatus("⏳ 正在启动抓取…");
         extractThread = new Thread(() -> {
             // root 可用就走文件直读（最快）；否则走本地代理抓取（不需要 root）
@@ -3240,11 +3722,12 @@ public class MainActivity extends Activity implements Ledao.Log {
     @Override
     protected void onActivityResult(int req, int res, android.content.Intent data) {
         super.onActivityResult(req, res, data);
-        if (req == REQ_FACE) {
+        if (req == REQ_FACE_PRE || req == REQ_FACE_MID) {
+            final String which = req == REQ_FACE_MID ? SLOT_MID : SLOT_PRE;
             if (res == RESULT_OK && data != null && data.getData() != null) {
-                installFacePhoto(data.getData());
+                installFacePhoto(data.getData(), which);
             } else {
-                log("⚠ 没选照片");
+                log("⚠ 没选照片（「" + slotLabel(which) + "」那张没变）");
             }
         }
         // ★ #8：水滴定位图标里的头像
@@ -3719,7 +4202,7 @@ public class MainActivity extends Activity implements Ledao.Log {
         if (ProxyVpn.supported()) {
             log("=== 关于代理 ===");
             log("✅ 你的手机是 Android 10+，抓包走 VPN，**不需要**设置任何代理。");
-            log("   点「📲 自动提取」→ 允许 VPN → 剩下的自动完成。");
+            log("   点「📲 提取令牌」→ 允许 VPN → 剩下的自动完成。");
             log("   系统 WLAN 代理栏位保持「无」，步道乐跑也不会察觉。");
             log("");
         }
@@ -4242,6 +4725,11 @@ public class MainActivity extends Activity implements Ledao.Log {
      */
     @Override
     public void onFacePre(final boolean ok, final int status, final String info) {
+        /* ★★★ v1.0.55（用户第 2 条）：跑前这次核验**真的把照片发出去了** ⇒ 本场用掉了，
+         *   跑完（不管成没成）要把两张一起删。通过才算用掉：没通过的话服务端可能根本没
+         *   收到图（本地拦下 / 服务端抽风），那时删照片是白删 —— 而 Err.faceAdvice 给的
+         *   建议正是"这次不用换照片，等会儿再点开始跑步"，删了就跟建议打架了。 */
+        if (ok) FACE_USED_THIS_RUN = true;
         final MainActivity dst = (LIVE != null) ? LIVE : this;
         dst.ui.post(() -> {
             if (ok) {
@@ -4610,66 +5098,81 @@ public class MainActivity extends Activity implements Ledao.Log {
             return;
         }
         if ("face".equals(kind)) {
-            /* ★ 2026-10-10 新加：跑前人脸体检一共有两道关（JPEG 结构 + 本机解码器），
+            /* ★ 2026-10-10 新加：人脸体检一共有两道关（JPEG 结构 + 本机解码器），
              *   而它只在"真的开跑"时才走 —— 上次被误拦就是因为这两道关里第一道写错了，
              *   却要等用户真跑一次才发现。这个自检把两道关单独跑一遍：不联网、不跑步、
-             *   不碰用户任何数据，只读 files/face.jpg。 */
-            File f = faceFile();
-            if (!f.exists()) {
-                log("[自检] 还没设置人脸照片（" + f.getAbsolutePath() + " 不存在）");
-                return;
-            }
-            try {
-                byte[] jpg = new byte[(int) f.length()];
-                java.io.DataInputStream in = new java.io.DataInputStream(
-                        new java.io.FileInputStream(f));
-                in.readFully(jpg);
-                in.close();
-
-                String bad = Ledao.jpegDiag(jpg);
-                log(String.format(Locale.US,
-                        "[自检] 人脸体检①结构：%s（%d 字节，EOI 在 %d，尾巴 %d 字节）",
-                        bad.length() == 0 ? "通过 ✅" : "没过 ❌ " + bad,
-                        jpg.length, Ledao.jpegEoi(jpg), Ledao.jpegTailBytes(jpg)));
-
-                android.graphics.BitmapFactory.Options bo =
-                        new android.graphics.BitmapFactory.Options();
-                bo.inJustDecodeBounds = true;
-                android.graphics.BitmapFactory.decodeByteArray(jpg, 0, jpg.length, bo);
-                boolean ok2 = bo.outWidth > 0 && bo.outHeight > 0;
-                log(String.format(Locale.US,
-                        "[自检] 人脸体检②本机解码器：%s（%dx%d）",
-                        ok2 ? "通过 ✅" : "没过 ❌ 报不出宽高", bo.outWidth, bo.outHeight));
-
-                /* ★ v1.0.24（docs/58）加的两行：跑前那次核验现在还会**先修一次**、
-                 *   修不动就用上次通过核验的那张 —— 所以自检也得把这三件事一起报出来，
-                 *   否则"照片有问题"和"这一场能不能跑"还是两笔账。 */
-                Ledao.FaceFix fx = Ledao.faceJpegFix(jpg);
-                log(fx == null
-                        ? "[自检] 人脸体检③本地小修：不需要（结构上没毛病）"
-                        : ("[自检] 人脸体检③本地小修：能修 ✅ —— " + fx.note
-                           + "（" + jpg.length + " → " + fx.bytes.length + " 字节"
-                           + (fx.lossy ? "，有损" : "，无损") + "）"));
-                byte[] okb = null;
+             *   不碰用户任何数据，只读那两张照片。
+             *
+             * ★ v1.0.55：跑前 / 跑中**两张都查**，最后再报一句"两张是不是同一张"
+             *   —— 那是开跑前会被拦下的第三种情况。 */
+            for (String w : new String[]{SLOT_PRE, SLOT_MID}) {
+                final String tag = "[自检] 「" + slotLabel(w) + "」那张：";
+                File f = faceFile(w);
+                if (!f.exists() || f.length() == 0) {
+                    log(tag + "还没设置（" + f.getAbsolutePath() + " 不存在）");
+                    continue;
+                }
                 try {
-                    File okf = new File(getFilesDir(), Ledao.FACE_OK_NAME);
-                    if (okf.exists() && okf.length() > 0) okb = readFileBytes(okf);
-                } catch (Throwable ignore) { }
-                log(okb == null
-                        ? "[自检] 人脸体检④备用照片：还没有（得先有一场核验通过才会有）"
-                        : String.format(Locale.US,
-                           "[自检] 人脸体检④备用照片：有（%d 字节，结构%s）",
-                           okb.length, Ledao.jpegDiag(okb).length() == 0 ? "完整 ✅" : "也不完整 ❌"));
+                    byte[] jpg = new byte[(int) f.length()];
+                    java.io.DataInputStream in = new java.io.DataInputStream(
+                            new java.io.FileInputStream(f));
+                    in.readFully(jpg);
+                    in.close();
 
-                boolean willSend = bad.length() == 0 || fx != null || okb != null;
-                log(bad.length() == 0 && ok2
-                        ? "[自检] 结论：这张照片跑前那道关会放行 —— 可以正常开跑"
-                        : (willSend
-                           ? "[自检] 结论：这张照片本身有毛病，但**本地能修**（或能拿备用那张顶上）——"
-                             + "跑前那次核验会照发，让服务端给结论"
-                           : "[自检] 结论：跑前会被拦下（和真跑时的判断一致）"));
-            } catch (Throwable t) {
-                log("[自检] 读人脸照片失败：" + Err.one(t));
+                    String bad = Ledao.jpegDiag(jpg);
+                    log(String.format(Locale.US,
+                            tag + "①结构 %s（%d 字节，EOI 在 %d，尾巴 %d 字节）",
+                            bad.length() == 0 ? "通过 ✅" : "没过 ❌ " + bad,
+                            jpg.length, Ledao.jpegEoi(jpg), Ledao.jpegTailBytes(jpg)));
+
+                    android.graphics.BitmapFactory.Options bo =
+                            new android.graphics.BitmapFactory.Options();
+                    bo.inJustDecodeBounds = true;
+                    android.graphics.BitmapFactory.decodeByteArray(jpg, 0, jpg.length, bo);
+                    boolean ok2 = bo.outWidth > 0 && bo.outHeight > 0;
+                    log(String.format(Locale.US, tag + "②本机解码器 %s（%dx%d）",
+                            ok2 ? "通过 ✅" : "没过 ❌ 报不出宽高", bo.outWidth, bo.outHeight));
+
+                    /* ★ v1.0.24（docs/58）加的两行：那次核验现在还会**先修一次**、
+                     *   修不动就用上次通过核验的那张 —— 所以自检也得把这三件事一起报出来，
+                     *   否则"照片有问题"和"这一场能不能跑"还是两笔账。 */
+                    Ledao.FaceFix fx = Ledao.faceJpegFix(jpg);
+                    log(fx == null
+                            ? (tag + "③本地小修 不需要（结构上没毛病）")
+                            : (tag + "③本地小修 能修 ✅ —— " + fx.note
+                               + "（" + jpg.length + " → " + fx.bytes.length + " 字节"
+                               + (fx.lossy ? "，有损" : "，无损") + "）"));
+                    byte[] okb = null;
+                    try {
+                        File okf = new File(getFilesDir(), Ledao.faceOkName(w));
+                        if (okf.exists() && okf.length() > 0) okb = readFileBytes(okf);
+                    } catch (Throwable ignore) { }
+                    log(okb == null
+                            ? (tag + "④备用照片 还没有（得先有一场核验通过才会有）")
+                            : String.format(Locale.US,
+                               tag + "④备用照片 有（%d 字节，结构%s）",
+                               okb.length, Ledao.jpegDiag(okb).length() == 0 ? "完整 ✅" : "也不完整 ❌"));
+
+                    boolean willSend = bad.length() == 0 || fx != null || okb != null;
+                    log(bad.length() == 0 && ok2
+                            ? (tag + "结论：这一道关会放行")
+                            : (willSend
+                               ? (tag + "结论：这张本身有毛病，但本地能修（或能拿备用那张顶上）——"
+                                 + "核验会照发，让服务端给结论")
+                               : (tag + "结论：会被拦下（和真跑时的判断一致）")));
+                } catch (Throwable t) {
+                    log(tag + "读失败：" + Err.one(t));
+                }
+            }
+            /* ★ v1.0.55：两张都设了还不够 —— 一样的话开跑时照样被拦。 */
+            File pre = faceFile(SLOT_PRE), mid = faceFile(SLOT_MID);
+            boolean hasBoth = pre.exists() && pre.length() > 0 && mid.exists() && mid.length() > 0;
+            if (hasBoth) {
+                log("[自检] 两张的关系：" + (sameFaceImage(pre, mid)
+                        ? "⚠ 是同一张照片 —— 开跑会被拦下（必须换掉其中一张）❌"
+                        : "不一样 ✅（这一条满足开跑条件）"));
+            } else {
+                log("[自检] 两张的关系：还差一张没设（开跑前会提示缺哪张）");
             }
             return;
         }
@@ -4760,7 +5263,7 @@ public class MainActivity extends Activity implements Ledao.Log {
      *   ② 补上 v1.0.25 之后的行为：切走 / 划掉最近任务都不会停跑，
      *      要停必须回来点「■ 停止跑步」。不写清楚，用户划掉以后会以为停不掉。
      *   ★ v1.0.54：整段改成「跑步期间屏幕要亮着」——「息屏也能跑」那句已经删除。
-     *   ③ 写清"什么时候会跳到步道乐跑"（★ v1.0.33：只有「📲 自动提取」和
+     *   ③ 写清"什么时候会跳到步道乐跑"（★ v1.0.33：只有「📲 提取令牌」和
      *      「📥 载入步道乐跑并抓取身份」这两个按钮会跳，助手不会自己跳）。
      *   ★ 文案只此一份；仓库里的《使用说明.md》与它同源，改一处要一起改。
      *   ★ 2026-10-21：按用户要求把【跑步期间可以走开】从 33 行砍到 8 行
@@ -4776,7 +5279,7 @@ public class MainActivity extends Activity implements Ledao.Log {
           + "     ① 确认令牌还能用（不能用会当场告诉你怎么办）\n"
           + "     ② 结束步道乐跑的进程（单会话登录，两边同时在线会互顶）\n"
           + "     ③ 开始跑步，地图上会实时画出轨迹\n"
-          + "   第一次用、或者身份过期了：先点「📲 自动提取」——\n"
+          + "   第一次用、或者身份过期了：先点「📲 提取令牌」——\n"
           + "   它会带你到步道乐跑转一圈把身份取回来。只有这一步会跳过去，\n"
           + "   助手自己不会突然跳到别的 App 里。\n\n"
           + "3. 跑完点「📋 复制日志」\n"

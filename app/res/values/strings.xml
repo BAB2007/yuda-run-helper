@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">宇达步道乐跑助手</string>
-    <string name="app_version">v1.0.54</string>
+    <string name="app_version">v1.0.55</string>
     <!-- ★ v1.0.31：首页右上角那行小字（原文由用户给定，不要自作主张改写） -->
     <string name="run_time_rule">仅可以在6~22点间进行校园跑，尽量避开晚饭高峰期</string>
 </resources>
