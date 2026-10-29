@@ -1397,15 +1397,50 @@ public class Ledao {
     public static String f32s(double v) { return String.valueOf((double) (float) v); }
 
     /**
+     * 3 参数老接口：**不知道本场结束时刻**，收尾段的 c 只能算到最后一个采样点为止。
+     *
+     * <p>⚠ 生产路径不要再用它 —— 见 4 参数那个重载的说明。留着重载只为离线测试与老调用方。
+     *
      * @param samples {lat, lon, 速度 m/s, 累计米, 绝对秒} —— run() 里逐拍攒下来的 GPS 采样
      * @param totalM  全程米数（= Σb×1000，也是上报的 distance）
      * @param endLL   收尾点坐标 {lat, lon}；null 则用最后一个采样点
      */
     public static String buildTrackJson(List<double[]> samples, double totalM, double[] endLL) {
+        return buildTrackJson(samples, totalM, endLL, Double.NaN);
+    }
+
+    /**
+     * ★★★ v1.0.56（用户 2026-10-29 第 1 条：详情页「最后不足一公里, 配速 01'45"」）：
+     * 多收一个 {@code endT = 本场结束时刻}（epoch 秒），**收尾段的 c 用它**。
+     *
+     * <h3>为什么必须多这一个参数</h3>
+     * 收尾段的 b 来自 {@code totalM}（= 上报里程，含"被系统冻住那段时间人还在跑"补回来的米数），
+     * 而 c 以前只算到**最后一个采样点**。可进程被冻住的那几十秒里：
+     * <pre>
+     *   elapsedSec += 冻住的秒数        // 用时如实算（v1.0.39 的口径，对）
+     *   validM     += 速度 × 冻住的秒数 // 里程按当时速度补回（也对）
+     *   采样点      += 0                // 进程没被调度，GPS 回调根本没触发
+     * </pre>
+     * 于是「补回来的米数」进了 b、「冻住的秒数」却没进 c：
+     * 2026-10-29 11:53 那一场（10 分钟 / 2.256 km）就是 255 m 配 27 s ⇒ **105 s/km（1'45"）**，
+     * 而两段整公里是 4'41" / 4'03" —— 详情页把它当成「最快配速」高高挂起来。
+     * 同时 Σc 只有 551 s、本场用时 600 s，那 49 秒凭空消失 —— 这是同一件事的另一个影子。
+     *
+     * <p>传了 endT 之后 c = {@code endT - 上一段时刻}：正常场次 endT 与最后采样点只差 1~3 秒
+     * （末拍剩的那点时间本来就该算进收尾段），行为不变；被冻过的那一场，冻住的秒数回到它
+     * 该在的那一段里，末段配速与"没被冻"时同值。{@code endT} 传 {@link Double#NaN} 或不大于
+     * 最后采样点时刻时，退回老口径。
+     *
+     * @param samples {lat, lon, 速度 m/s, 累计米, 绝对秒} —— run() 里逐拍攒下来的 GPS 采样
+     * @param totalM  全程米数（= Σb×1000，也是上报的 distance）
+     * @param endLL   收尾点坐标 {lat, lon}；null 则用最后一个采样点
+     * @param endT    本场结束时刻（epoch 秒，= t0 + used_time）；NaN = 不知道（老口径）
+     */
+    public static String buildTrackJson(List<double[]> samples, double totalM, double[] endLL, double endT) {
         StringBuilder sb = new StringBuilder(1 << 16);
         sb.append('[');
         if (samples == null || samples.isEmpty()) return sb.append(']').toString();
-        double prevMarkM = 0, firstT = samples.get(0)[4], prevMarkT = firstT;
+        double prevMarkM = 0, prevMarkT = samples.get(0)[4];
         int marks = 0;
         for (int i = 0; i < samples.size(); i++) {
             double[] sp = samples.get(i);
@@ -1416,27 +1451,66 @@ public class Ledao {
             sb.append(",\"s\":").append(f32s(sp[2]));
             // 每满 1 公里切一段；离结尾不足 25 米就先不切，留给收尾段
             // （真机每段的 b 都略大于 1 而不是正好 1，就是这个道理）
-            if (sp[3] >= (marks + 1) * 1000.0 && (totalM - sp[3]) > 25.0) {
-                sb.append(",\"b\":").append(f32s((sp[3] - prevMarkM) / 1000.0))
-                  .append(",\"c\":").append((long) Math.max(1, Math.round(sp[4] - prevMarkT)));
+            if (isMark(sp, marks, totalM)) {
+                double segKm = (sp[3] - prevMarkM) / 1000.0;
+                double segSec = sp[4] - prevMarkT;
+                sb.append(",\"b\":").append(f32s(segKm))
+                  .append(",\"c\":").append(paceSec(segKm, segSec));
                 prevMarkM = sp[3];
                 prevMarkT = sp[4];
                 marks++;
             }
             sb.append(",\"l\":1}");
         }
+        /* ★★★ v1.0.56：收尾段的时间轴补到**本场结束**，不是停在上一个采样点。
+         *   被系统冻住的那段（用时照算、里程照补、但没有采样点）就是靠这一行回到末段里的；
+         *   正常场次 t1 与最后采样点只差 1~3 秒，等于把末拍剩下那一点时间算准。 */
         double lastT = samples.get(samples.size() - 1)[4];
+        if (!Double.isNaN(endT) && endT > lastT) lastT = endT;
         double[] e = endLL != null ? endLL
                 : new double[]{samples.get(samples.size() - 1)[0],
                                samples.get(samples.size() - 1)[1]};
+        double tailB = (totalM - prevMarkM) / 1000.0;
+        long tailC = tailPace(tailB, lastT - prevMarkT);
         // 收尾汇总点：只带最后一段的 b/c，速度 ~0（真机是 0.009999999776482582）
         sb.append(",{\"o\":").append(f32s(e[1]))
           .append(",\"a\":").append(f32s(e[0]))
           .append(",\"s\":").append(f32s(0.01))
-          .append(",\"b\":").append(f32s((totalM - prevMarkM) / 1000.0))
-          .append(",\"c\":").append((long) Math.round(Math.max(1, lastT - prevMarkT)))
+          .append(",\"b\":").append(f32s(tailB))
+          .append(",\"c\":").append(tailC)
           .append(",\"l\":1}]");
         return sb.toString();
+    }
+
+    /**
+     * ★★★ v1.0.56（2026-10-29 用户第 1 条）：**c 是这一段的配速（秒/公里），不是这一段的秒数**。
+     *
+     * <h3>怎么确定的</h3>
+     * 乐跑详情页「公里 配速」那张表直接把 c 当配速显示。三条证据：
+     * <ol>
+     *   <li>今天我们跑的那一场（2.266 km / 783 s），服务端记录里 b/c 是
+     *       1.0019/349、1.0043/321、0.2598/110，详情页显示 **5'49" / 5'21" / 1'50"** ——
+     *       前三行恰好等于 c，末段也恰好等于 c=110。若按 c/b 算，末段应当是 7'03"。</li>
+     *   <li>真机自己的轨迹（`work/direction_run/2026-09-27_18-49.txt`）：
+     *       1.0013/527、1.0056/273、**0.1478/270**。末段 148 米若"c = 秒数"就是
+     *       270 秒/148 米 = 2 km/h —— 人做不到；"c = 配速"则是 4'30"/km、这一段花了 40 秒，
+     *       整场 Σ(b×c) = 842 秒（6'31"/km），跟三条分段的速度完全自洽。</li>
+     *   <li>用户给的"正常数据"那张图：04'36" / 03'47" / **07'02"**，而平均配速 04'39"
+     *       —— 只有在"c = 配速"下才说得通（末段走慢了，所以平均被拉低）。</li>
+     * </ol>
+     *
+     * <p>为什么这个错一直没被发现：整公里那几段 b≈1.00，**时长和配速本来就差不多**，
+     * 写哪个都对；只有末段（b 常常只有 0.2~0.5）两者会差三四倍 —— 于是详情页上
+     * 那行「最后不足一公里, 配速 xx'yy"」就成了"这一小段跑了几秒"，
+     * 2026-10-28 那场 0.363 km / 105 秒 显示成 **1'45"**，比世界纪录快一倍。
+     *
+     * @param segKm  这一段里程（公里）
+     * @param segSec 这一段用时（秒）
+     * @return 这一段配速（秒/公里，四舍五入）
+     */
+    public static long paceSec(double segKm, double segSec) {
+        if (segKm <= 1e-6) return Math.max(1, Math.round(segSec));
+        return Math.max(1, Math.round(segSec / segKm));
     }
 
     /** 轨迹里 b/c 分段的条数（= 满整公里的条数 + 1 条收尾），给日志用 */
@@ -1444,9 +1518,74 @@ public class Ledao {
         if (samples == null) return 0;
         int marks = 0;
         for (double[] sp : samples) {
-            if (sp[3] >= (marks + 1) * 1000.0 && (totalM - sp[3]) > 25.0) marks++;
+            if (isMark(sp, marks, totalM)) marks++;
         }
         return marks + 1;
+    }
+
+    /**
+     * 这一采样点该不该切一条 b/c —— **口径只写在这一处**。
+     *
+     * <p>条件两条：① 有效里程已经跨过第 {@code marks+1} 个整公里；
+     * ② 离结尾还超过 25 米（真机每段的 b 都略大于 1 而不是正好 1，就是这条留的；
+     * 离结尾太近就先不切，把那一截留给收尾段）。
+     */
+    private static boolean isMark(double[] sp, int marks, double totalM) {
+        return sp[3] >= (marks + 1) * 1000.0 && (totalM - sp[3]) > 25.0;
+    }
+
+    /**
+     * ★ v1.0.56：**收尾段**（收尾点那一条 b/c）是多少 —— {@code {公里, 用时秒, 配速}}。
+     *
+     * <p>给日志和离线测试用：详情页那行「最后不足一公里, 配速 xx'yy"」读的就是这条 b/c，
+     * 而 <b>c 是配速</b>（见 {@link #paceSec} 的三条证据），不是用时。
+     * 以前只有跑完把轨迹反解出来才知道它对不对，现在收尾时当场打一行。
+     * 口径与 {@link #buildTrackJson} 完全相同（同一个 {@link #isMark}、同一道 {@link #tailPace} 闸）。
+     *
+     * @param endT 本场结束时刻（epoch 秒）；NaN = 按最后采样点算（老口径）
+     * @return {公里, 用时秒, 配速秒每公里}
+     */
+    public static double[] tailSegment(List<double[]> samples, double totalM, double endT) {
+        if (samples == null || samples.isEmpty()) return new double[]{0, 0, 0};
+        double prevMarkM = 0, prevMarkT = samples.get(0)[4];
+        int marks = 0;
+        for (double[] sp : samples) {
+            if (!isMark(sp, marks, totalM)) continue;
+            prevMarkM = sp[3];
+            prevMarkT = sp[4];
+            marks++;
+        }
+        double lastT = samples.get(samples.size() - 1)[4];
+        if (!Double.isNaN(endT) && endT > lastT) lastT = endT;
+        double b = (totalM - prevMarkM) / 1000.0;
+        double sec = Math.max(1, lastT - prevMarkT);
+        return new double[]{b, sec, tailPace(b, sec)};
+    }
+
+    /**
+     * 收尾段配速的**下限**（秒/公里）：180 s/km = 3'00"/km。
+     *
+     * <p>取这个数的理由：服务端计分窗口就是 180~480 s/km（docs/71 §二.2），
+     * 比 3'00" 还快的"最后不足一公里"本来就不可信；用户 2026-10-29 的原话是
+     * 「可以慢但**绝对不能太快**」—— 所以宁可显示成慢，也不能出现 34 km/h。
+     */
+    public static final double TAIL_MIN_PACE_S_PER_KM = 180.0;
+
+    /**
+     * 收尾段的 c（= **配速**，秒/公里）—— 含「可以慢、绝对不能太快」那道闸。
+     *
+     * <p>先在时间轴上算真实配速（{@link #paceSec}），再夹一个 180 s/km 的**下限**。
+     * 正常场次永远碰不到这道闸（末段和整公里段同一个口径）；它只为"万一还有别的
+     * 没进时间轴的里程"兜底 —— 宁可详情页显示 7'00"，也不能出现 1'45"。
+     *
+     * <p>⚠ 这道闸**只会往"慢"的方向抬**，从不会把配速改快。
+     *
+     * @param bKm    收尾段里程（公里）
+     * @param segSec 收尾段用时（秒，含被系统冻住、已按 {@code endT} 补进末段的那几十秒）
+     */
+    public static long tailPace(double bKm, double segSec) {
+        if (bKm <= 0.001) return paceSec(1.0, segSec);
+        return Math.max(Math.round(TAIL_MIN_PACE_S_PER_KM), paceSec(bKm, segSec));
     }
 
     /**
@@ -3343,8 +3482,14 @@ public class Ledao {
             //   ★ v1.0.39：末点也要带上本场那 3~5 m 的整体平移，否则"最后一个点"会
             //     突兀地落回路网原点，和前面几百个点不在同一个坐标系里。
             double[] endLL = {pos[0] + offLatDeg, pos[1] + offLonDeg};
-            String trackJson = buildTrackJson(samples, validM, endLL);
+            /* ★★★ v1.0.56（用户 2026-10-29 第 1 条）——**必须把 t1 传进去**。
+             *   收尾段的 c 要用「本场结束时刻」，不能用「最后一个采样点」：
+             *   收尾前被系统冻住的那几十秒里，用时照算、里程照补、**采样点一个没有**，
+             *   用最后采样点收尾就会把那 49 秒弄丢 ⇒ 末段 255 m / 27 s = 105 s/km（1'45"）。
+             *   详见 buildTrackJson 4 参数重载的说明。 */
+            String trackJson = buildTrackJson(samples, validM, endLL, t1);
             int marks = trackMarks(samples, validM);
+            double[] tail = tailSegment(samples, validM, t1);
             double firstT = samples.isEmpty() ? 0 : samples.get(0)[4];
             double lastT = samples.isEmpty() ? used : samples.get(samples.size() - 1)[4];
             JSONArray traj;
@@ -3357,9 +3502,28 @@ public class Ledao {
             }
             log.log(String.format(Locale.US,
                     "      轨迹 %d 个 GPS 点 + 1 收尾点；b/c 分段 %d 条；"
-                    + "Σb≈%.4f km = 上报里程（几何长度比它多 %.0f m，真机同样是几何>上报）"
+                    + "Σb≈%.4f km = 上报里程（其中 %.0f m 是无效里程，真机同样是几何>上报）"
                     + "；跨度 %.0f 秒;  末尾带 p:1",
-                    samples.size(), marks, distKm, distKm, invalidM, lastT - firstT));
+                    samples.size(), marks, distKm, invalidM, lastT - firstT));
+            /* ★★★ v1.0.56：末段 b/c 当场打出来。
+             *   乐跑详情页那行「最后不足一公里, 配速 xx'yy"」读的就是这一条 ——
+             *   以前只有跑完把轨迹反解出来才知道它对不对（2026-10-28 那场就是这么发现的：
+             *   两段整公里 4'41" / 4'03"，末段却报 1'45"）。现在收尾当场核对。
+             *   ⚠ c 是**配速**（秒/公里），不是用时 —— 见 {@link #paceSec}。 */
+            if (tail[0] > 0.0005) {
+                double tailPace = tail[2];
+                String verdict;
+                if (tailPace >= 180 && tailPace <= 480) {
+                    verdict = " ✅ 在服务端窗口内";
+                } else {
+                    verdict = " ⚠ 不在 180~480 s/km 的窗口内（详情页那行会跟着变）";
+                }
+                log.log(String.format(Locale.US,
+                        "      末段（详情页那行「最后不足一公里, 配速」就是它）："
+                      + "%.3f km 用了 %.0f 秒 → c=%.0f（配速 %d'%02d\"）%s",
+                        tail[0], tail[1], tail[2],
+                        (int) (tailPace / 60), Math.round(tailPace) % 60, verdict));
+            }
 
             // ★★★ 把轨迹落到自己的私有目录，方便 `adb shell su -c cat` 直接 pull 下来核对
             //   （不用去 OSS 拉 —— OSS 要活会话的 STS，会话一死就查不了了）。
