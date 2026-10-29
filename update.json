@@ -1,16 +1,16 @@
 {
   "schema": 1,
   "app": "com.ledao.tester",
-  "ver": 155,
-  "name": "1.0.55",
+  "ver": 156,
+  "name": "1.0.56",
   "min": 0,
   "size": 2179518,
-  "sha256": "ef8e17b73dcefee824839c4b9309878c21801f641526e2551635c4da85979b9d",
-  "note": "两张脸分开存、跑完就删；按钮改名「提取令牌」；留言换新",
+  "sha256": "2916d3011c5e4cc891b99ae281f65f805e9c259faa4a12d2485867af70392130",
+  "note": "修改了一些bug",
   "page": "https://github.com/BAB2007/yuda-run-helper",
   "ping": "",
   "urls": [
-    "https://raw.githubusercontent.com/BAB2007/yuda-run-helper/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.55.apk",
-    "https://gitee.com/BAB2007/yuda-run-helper/raw/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.55.apk"
+    "https://raw.githubusercontent.com/BAB2007/yuda-run-helper/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.56.apk",
+    "https://gitee.com/BAB2007/yuda-run-helper/raw/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.56.apk"
   ]
 }
