@@ -1589,47 +1589,43 @@ public class Ledao {
     }
 
     /**
-     * 陀螺仪 / 加速度文件（type=8）
-     * ★ 来自 App 真实上传文件的实证格式 —— **明文 JSON，不加密**：
-     *   [{"n":"114.602066","a":"36.658878","t":1790681601464,
-     *     "ax":"-0.00","ay":"0.00","az":"0.00","gx":"-2.07","gy":"-0.08","gz":"9.36"}, ...]
-     *   n=经度 a=纬度（字符串）· t=毫秒时间戳 · 采样间隔实测 60~72ms · 偶发空档
-     */
-    /**
-     * 陀螺仪 / 加速度文件（type=8）
-     * ★ 来自 App 真实上传文件的实证格式 —— **明文 JSON，不加密**：
-     *   [{"n":"114.602066","a":"36.658878","t":1790681601464,
-     *     "ax":"-0.00","ay":"0.00","az":"0.00","gx":"-2.07","gy":"-0.08","gz":"9.36"}, ...]
-     *   n=经度 a=纬度（字符串）· t=毫秒时间戳 · 采样间隔实测 60~72ms · 偶发空档
+     * 陀螺仪 / 加速度文件（type=8）—— 明文 JSON，9 个字段，与真机原件逐字段同格式：
+     * <pre>
+     *   [{"n":"114.602051","a":"36.658894","t":1791293742545,
+     *     "ax":"-0.94","ay":"-0.08","az":"0.29","gx":"-3.50","gy":"2.15","gz":"12.74"}, ...]
+     * </pre>
      *
-     * <p>★★★ v1.0.39（#7「陀螺仪伪随机」，docs/71 §二.7）：**从"伪随机游走"改成"从轨迹推出来"**。
+     * <p>★★★ v1.0.59（docs/96）：**照着 7 份真机原件（18 943~116 598 字节、4 241 个样本）
+     * 重新定口径**。以前是"整场 15 Hz 连续采"，和真机差 9.6 倍体积：
      *
-     * <p>旧实现是三个独立的一维随机游走（每点 ±0.6 地乱走），跟这一场**跑了多快、
-     * 转了多少弯、步子多密**毫无关系。它是"看起来像传感器数据"，但只要把同一场
-     * 的其它文件拿出来对比就露馅：
-     * <ul>
-     *   <li>轨迹里有明显转弯，陀螺仪那一秒却毫无反应（真机转弯时竖直轴角速度必然起来）；</li>
-     *   <li>{@code step_info} 说这一分钟 168 步（2.8 Hz），加速度里却找不到 2.8 Hz 的周期；</li>
-     *   <li>两份不同账号的文件，统计形状一模一样（同一套随机游走参数）。</li>
-     * </ul>
+     * <table border="1">
+     *   <tr><th></th><th>真机（7 份原件）</th><th>我们 v1.0.58</th></tr>
+     *   <tr><td>结构</td><td>5~6 段 × <b>10.0 秒</b>（段内 150~152 个样本）</td>
+     *       <td>整场连续 · 74 段（假的）</td></tr>
+     *   <tr><td>真正在采样</td><td>6.5~15.7%（段间空 110~220 秒）</td><td>72.8%</td></tr>
+     *   <tr><td>体积 / 样本</td><td>95 432 B / 753</td><td>916 958 B / 7 151</td></tr>
+     *   <tr><td>0.3~5 秒小空档</td><td><b>0 个</b></td><td>73 个（我们编的）</td></tr>
+     *   <tr><td>坐标 n/a</td><td>753 个样本里只有 <b>25 个</b>不同值（GPS 每 2.0 秒刷一次，
+     *       其余沿用上一个定位）</td><td>每样本一个（250 个不同值）</td></tr>
+     *   <tr><td>加速度标准差</td><td>ax .36 / ay .31 / az .28</td><td>1.15 / 0.91 / 2.54</td></tr>
+     *   <tr><td>陀螺仪</td><td>有<b>零偏</b>：gx +1.13 / gy +5.12 / gz +7.89（±1.6~2.1）</td>
+     *       <td>三轴都绕 0 摆，gz 还撞到 ±60.00</td></tr>
+     * </table>
      *
-     * <p>现在的口径是"三个物理量，一个来源"：
-     * <ol>
-     *   <li><b>航向变化率</b>（{@link #bearing}逐段算出来）→ 竖直轴角速度 gz：直道≈0、
-     *       拐角冲一下，量级按真机样本压在 ±几十 deg/s（真机那三个数就是 -2.07 / -0.08 / 9.36）；</li>
-     *   <li><b>步频</b>（{@link #perStep} 算出来的 {@link #lastCadence}）→ 摆动频率：
-     *       跑步 2.4~3.0 Hz —— 与其自己编一个频率，不如用这一场**真的**步数去除时长；</li>
-     *   <li><b>速度</b> → 摆幅：走得慢摆得小，跑起来摆得开。</li>
-     * </ol>
-     * 所以同一场里"轨迹转弯 / 步频 / 加速度周期"三者自洽，跨场又各自不同（步频、
-     * 时长、路线都不一样）。⚠ 仍未验证：服务端到底拿这个文件做什么（docs/71 §八.2）。
+     * <p>现在的口径：<b>每 120 秒开一个 10 秒窗口 · 15 Hz · 坐标每 2 秒刷一次并沿用 ·
+     * 陀螺仪 = 本场零偏 + 步频摆动 + 航向变化率 · 加速度峰值 ~0.5 m/s²</b>。
+     * 零偏从 7 份原件的整体均值里随机取一份（真机零偏取决于手机怎么握，每场都不同），
+     * 段内再缓慢漂移 —— 真机同一场里 gx 从 -0.47 一路爬到 +2.42、gy 3.26 → 6.11。
+     *
+     * <p>2 km 的场次落 5 段 / 约 750 个样本 / 95 KB，与真机同一量级。
+     * ⚠ 仍未验证：服务端拿这个文件做什么（docs/71 §八.2）。
      */
     public byte[] packSensor(JSONArray traj, long t0Sec, long usedSec) throws Exception {
         JSONArray out = new JSONArray();
         int n = traj.length();
         if (n < 2) return "[]".getBytes("UTF-8");
 
-        /* ── 0) 每段的用时与航向 —— 后面两个量都从这里来 ───────────────────── */
+        /* ── 0) 每段用时与航向 —— 后面两个量都从这里来 ─────────────────────── */
         double segSec = Math.max(1.0, usedSec) / (double) (n - 1);
         double[] head = new double[n];
         head[0] = bearing(traj.getJSONObject(0), traj.getJSONObject(1));
@@ -1641,64 +1637,130 @@ public class Ledao {
         double stepHz = Math.max(1.6, Math.min(3.4, cadence / 60.0));
         double breathHz = 0.28 + rnd.nextDouble() * 0.10;
 
-        long tMs = t0Sec * 1000L;
-        long endMs = tMs + usedSec * 1000L;
-        long t0ms = t0Sec * 1000L;
-        int[] gaps = {59, 60, 61, 66, 67, 68, 69, 70, 71, 72};
-        /* 起始姿态照抄真机样本（gx=-2.07 / gy=-0.08 / gz=9.36），之后平滑跟随 */
-        double gx = -2.07, gy = -0.09, gz = 9.36;
-        int i = 0;
-        while (true) {
-            /* ★ v1.0.40：**最后一个样本必须正好落在 endMs / 轨迹末点**。
-             *
-             *   以前是 `while (tMs < endMs)` 自然跑完 —— 而每 97 个样本插一次的
-             *   800~4000 ms 真空档（照抄真机的偶发断档）只要正好出现在收尾，
-             *   最后一个样本就会停在末点前 3~4 秒、也就是**一整个街段（~10 m）之外**：
-             *   传感器流报的位置和轨迹末点对不上。真机不是这样 —— 人停在哪儿，
-             *   最后一个采样就在哪儿。SensorTest G2b 抖红过两次，根子在这里。 */
-            boolean last = tMs >= endMs;
-            if (last) tMs = endMs;
-            double tt = (tMs - t0ms) / 1000.0;
-            int k = (int) Math.min(n - 1, Math.round(tt / segSec));
-            JSONObject tp = traj.getJSONObject(k);
-            double spd = Math.max(0.0, tp.optDouble("s", 2.5));        // m/s
-            double yaw = 0;
-            if (k > 0 && k < n - 1) {
-                double d = head[k] - head[k - 1];
-                while (d > 180) d -= 360;
-                while (d < -180) d += 360;
-                yaw = d / segSec;                                      // deg/s
+        /* ── 2) 本场零偏：从 7 份真机原件的**整体均值**里随机取一份 ───────────
+         *   gyroscope__122  +1.13 / +5.12 / +7.89      sensor_00  -4.20 / +5.85 / +0.98
+         *   sensor_01       -2.80 / +2.46 / +8.35      sensor_02  -0.14 / +0.08 / +9.50
+         *   sensor_03       -0.33 / +0.37 / +9.52      sensor_04  +1.86 / -1.66 / +2.61
+         *   sensor_05       +1.78 / +4.71 / +8.13
+         *   （gz 大多落在 +8~+9.5：手机握在手里跑，竖直轴一直带着几度/秒的零偏） */
+        double[][] BIAS = {
+                {1.13, 5.12, 7.89}, {-4.20, 5.85, 0.98}, {-2.80, 2.46, 8.35},
+                {-0.14, 0.08, 9.50}, {-0.33, 0.37, 9.52}, {1.86, -1.66, 2.61},
+                {1.78, 4.71, 8.13},
+        };
+        double[] bias = BIAS[rnd.nextInt(BIAS.length)];
+        double bx = bias[0], by = bias[1], bz = bias[2];
+        /* 一阶平滑的状态量，起手就是零偏（真机第一段就在零偏上，不是从 0 爬上去） */
+        double gx = bx, gy = by, gz = bz;
+
+        long tStartMs = t0Sec * 1000L;
+        long tEndMs = tStartMs + Math.max(1L, usedSec) * 1000L;
+        for (long win = tStartMs; win < tEndMs; win += SEN_PERIOD_MS) {
+            long winEnd = Math.min(win + SEN_WIN_MS, tEndMs);
+            /* 段与段之间零偏缓慢漂移（真机同一场 gx -0.47 → +2.42） */
+            bx = drift(bx, bias[0], 0.25);
+            by = drift(by, bias[1], 0.25);
+            bz = drift(bz, bias[2], 0.25);
+
+            long tMs = win;
+            int sinceFix = 0;
+            double cLon = traj.getJSONObject(0).optDouble("o", 0);
+            double cLat = traj.getJSONObject(0).optDouble("a", 0);
+            /* 段尾**不硬凑一个样本**：真机 dt 最小 53 ms，硬凑会造出一个 18 ms 的假间隔 */
+            while (tMs <= winEnd) {
+                double tt = (tMs - tStartMs) / 1000.0;
+                int k = (int) Math.min(n - 1, Math.round(tt / segSec));
+                JSONObject tp = traj.getJSONObject(k);
+
+                /* 坐标：**每 2 秒刷一次，其余样本沿用**（真机 753 个样本只有 25 个不同坐标；
+                 * 段内 30 个样本一刷 = 2.0 秒，正是定位回调的节拍） */
+                if (sinceFix >= SEN_FIX_SAMPLES) {
+                    cLon = tp.optDouble("o", cLon);
+                    cLat = tp.optDouble("a", cLat);
+                    sinceFix = 0;
+                }
+                sinceFix++;
+
+                double spd = Math.max(0.0, tp.optDouble("s", 2.5));        // m/s
+                double yaw = 0;
+                if (k > 0 && k < n - 1) {
+                    double d = head[k] - head[k - 1];
+                    while (d > 180) d -= 360;
+                    while (d < -180) d += 360;
+                    yaw = d / segSec;                                      // deg/s
+                }
+                double sAmp = Math.min(1.0, spd / 4.2);                    // 0~1：跑得越快摆得越开
+                double ph = 2 * Math.PI * stepHz * tt;
+                double br = 2 * Math.PI * breathHz * tt;
+
+                /* 陀螺仪：零偏 + 转弯角速度 + 步频摆动 + 一点白噪声，再做一阶平滑。
+                 * 摆幅按真机段内标准差定：原件 gx 1.16 / gy 1.22 / gz 2.55，整体 1.62/1.61/2.07。
+                 * 平滑系数 0.8（不是 0.5）—— 15 Hz 采样下 2.8 Hz 的步频用 0.5 会被抹掉一半，
+                 * 量出来的标准差只有 0.57，不到真机的四成。
+                 * 转弯项 0.45×yaw：真机 gz 最大 17.26，就是零偏之上再冲 9 度/秒。 */
+                gx = 0.2 * gx + 0.8 * (bx + 3.2 * sAmp * Math.sin(ph)
+                        + 0.50 * Math.sin(br) + 0.35 * rnd.nextGaussian());
+                gy = 0.2 * gy + 0.8 * (by + 2.9 * sAmp * Math.sin(ph + 1.9)
+                        + 0.35 * rnd.nextGaussian());
+                gz = 0.2 * gz + 0.8 * (bz + 2.6 * sAmp * Math.sin(ph + 0.6)
+                        + 0.32 * yaw + 0.60 * rnd.nextGaussian());
+
+                /* 加速度（已去重力）：**每落一步一个峰**，峰值 0.20+0.45×速度系数
+                 * （真机实测 ax 标准差 0.36 / ay 0.31 / az 0.28，az 最大 1.49 ——
+                 *  我们 v1.0.58 给到 1.15/0.91/2.54、最大 4.6，吵了 9 倍） */
+                double aBase = 0.20 + 0.45 * sAmp;
+                double ax = 0.85 * aBase * Math.sin(ph + 1.2) + 0.11 * rnd.nextGaussian();
+                double ay = 0.72 * aBase * Math.sin(ph + 2.4) + 0.11 * rnd.nextGaussian();
+                double az = 0.65 * aBase * Math.sin(ph) + 0.10 * rnd.nextGaussian();
+
+                /* 值域按 7 份原件合并出来的最小/最大**软**压（tanh）—— 真机里从来没有
+                 * 正好 60.00 这种整数，硬 clamp 会留下一个"整点值"的指纹 */
+                JSONObject o = new JSONObject();
+                o.put("n", String.format(Locale.US, "%.6f", cLon));
+                o.put("a", String.format(Locale.US, "%.6f", cLat));
+                o.put("t", tMs);
+                o.put("ax", String.format(Locale.US, "%.2f", soft(ax, -4.46, 7.96)));
+                o.put("ay", String.format(Locale.US, "%.2f", soft(ay, -5.86, 5.76)));
+                o.put("az", String.format(Locale.US, "%.2f", soft(az, -4.72, 3.64)));
+                o.put("gx", String.format(Locale.US, "%.2f", soft(gx, -24.08, 10.60)));
+                o.put("gy", String.format(Locale.US, "%.2f", soft(gy, -18.97, 26.31)));
+                o.put("gz", String.format(Locale.US, "%.2f", soft(gz, -23.46, 17.26)));
+                out.put(o);
+                tMs += sampleGapMs();
             }
-            double sAmp = Math.min(1.6, spd / 3.3);                    // 0~1.6：速度越大摆幅越大
-            double ph = 2 * Math.PI * stepHz * tt;
-            double br = 2 * Math.PI * breathHz * tt;
-            /* 陀螺仪：目标值 = 转弯角速度 + 步频摆动 + 呼吸漂移，再做一阶平滑（真机也是滤过的） */
-            gx = clamp(0.55 * gx + 0.45 * (8.0 * sAmp * Math.sin(ph) + 1.4 * Math.sin(br)), -60, 60);
-            gy = clamp(0.55 * gy + 0.45 * (5.0 * sAmp * Math.sin(ph + 1.9) + 1.1 * Math.sin(br + 0.7)), -60, 60);
-            gz = clamp(0.55 * gz + 0.45 * (yaw * 1.6 + 2.2 * sAmp * Math.sin(ph + 0.6)), -60, 60);
-            /* 加速度（已去重力）：**每落一步一个峰** —— 所以频率就是步频，不是它的两倍。
-             * （跑步的竖直加速度是一步一冲，左右脚的差别体现在 ax/ay 的相位上。） */
-            double aAmp = 1.1 + 2.2 * sAmp;
-            double az = aAmp * Math.sin(ph) + 0.25 * rnd.nextGaussian();
-            double ax = 0.45 * aAmp * Math.sin(ph + 1.2) + 0.20 * rnd.nextGaussian();
-            double ay = 0.35 * aAmp * Math.sin(ph + 2.4) + 0.20 * rnd.nextGaussian();
-            JSONObject o = new JSONObject();
-            o.put("n", String.format(Locale.US, "%.6f", tp.optDouble("o", 0)));
-            o.put("a", String.format(Locale.US, "%.6f", tp.optDouble("a", 0)));
-            o.put("t", tMs);
-            o.put("ax", String.format(Locale.US, "%.2f", ax));
-            o.put("ay", String.format(Locale.US, "%.2f", ay));
-            o.put("az", String.format(Locale.US, "%.2f", az));
-            o.put("gx", String.format(Locale.US, "%.2f", gx));
-            o.put("gy", String.format(Locale.US, "%.2f", gy));
-            o.put("gz", String.format(Locale.US, "%.2f", gz));
-            out.put(o);
-            i++;
-            if (last) break;                                          // 收尾样本已经落在 endMs
-            tMs += gaps[rnd.nextInt(gaps.length)];
-            if (i % 97 == 0) tMs += 800 + rnd.nextInt(3200);           // 真机也有偶发空档
+            /* 段内样本数少了就补不回来（窗口结束在 usedSec 之外时截断，真机也有 0.46 秒的残段） */
         }
         return out.toString().getBytes("UTF-8");
+    }
+
+    /** 真机每段的长度：10.0 秒（7 份原件段长 9.93~10.07） */
+    static final long SEN_WIN_MS = 10_000L;
+    /** 段与段的周期：120 秒（真机段起点间隔 110.5~120.5 秒，随定位节拍浮动；偶尔漏一段） */
+    static final long SEN_PERIOD_MS = 120_000L;
+    /** 坐标沿用多少个样本才刷新一次：30 个 × 66.7 ms = 2.0 秒（真机段内刷新间隔中位 2.00 秒） */
+    static final int SEN_FIX_SAMPLES = 30;
+
+    /**
+     * 采样间隔（毫秒）—— 真机 4 241 个样本量出来的分布：
+     * 最小 53 / p5 55 / 中位 68 / p95 80 / 最大 144，均值 66.69、标准差 5.1（15 Hz）。
+     */
+    int sampleGapMs() {
+        int d = (int) Math.round(67 + rnd.nextGaussian() * 5.0);
+        return d < 53 ? 53 : Math.min(d, 85);
+    }
+
+    /**
+     * 软饱和：把 v 压进 (lo, hi)，但**永远到不了边界**（tanh）。
+     * 硬 clamp 会在输出里留下正好等于边界的值 —— 真机那份 753 个样本里一个都没有。
+     */
+    static double soft(double v, double lo, double hi) {
+        double mid = (lo + hi) / 2, half = (hi - lo) / 2;
+        return mid + half * Math.tanh((v - mid) / half);
+    }
+
+    /** 段间零偏漂移：围绕本场零偏的慢随机游走，限制在 ±2.5 度/秒（真机同一场漂了 ~3） */
+    double drift(double v, double center, double sigma) {
+        return center + clamp((v - center) * 0.9 + rnd.nextGaussian() * sigma, -2.5, 2.5);
     }
 
     /** a→b 的方位角（度，正北 0、顺时针 0~360）—— 陀螺仪竖直轴角速度就是它的变化率 */
@@ -2966,11 +3028,17 @@ public class Ledao {
                  *     就**先在缺口终点补一个点**（恢复记录的第一个点），
                  *     这样轨迹上那两点之间的距离就正好等于缺口长度，不会多出半拍来。 */
                 {
-                    double sampleSpan = Math.min(3.0, Math.max(1.5, runSec / 2.0));
+                    /* ★★★ v1.0.58：点距按真机实测的 **2.27 秒 / 7.7 米** 来。
+                     *   最硬的一份证据是 2026-10-06 那场（真机自己上传的轨迹
+                     *   work/1006/run_record__119.PLAINTEXT.json）：272 点 / 2103 m /
+                     *   616 s → 平均 **2.27 秒一点、7.7 米一点**，点距中位 8.04 m。
+                     *   以前是"半拍一个点"（3 秒 / 12 米），比真机稀 60%：
+                     *   同一场 3.2 km 只落 258 点（80 点/km），真机是 132 点/km。
+                     *   服务端拿这份轨迹判"有没有经过打卡点"，点稀了还容易判漏。 */
+                    double sampleSpan = 2.3;
                     int nSub = Math.max(1, (int) Math.ceil(runSec / sampleSpan));
                     boolean gapEndsHere = faceInvalid
                             && fromM < faceGapEndM - 1e-6 && totalM >= faceGapEndM - 1e-6;
-                    int emitted = 0;
                     for (int s2 = 0; s2 <= nSub; s2++) {
                         double frac, mm;
                         if (s2 == 0) {
@@ -3011,10 +3079,13 @@ public class Ledao {
                                     faceResumeRampSec, faceResumeMulMin);
                         }
                         samples.add(new double[]{pLat, pLon, sVal, cumV, tS});
-                        emitted++;
+                        /* ★★★ v1.0.58：截图上的折线**就用这些上传点**（每 2~3 秒一个、
+                         *   点距 8~12 m），不再"一拍一个点"。以前一拍（6 秒 / 20 m）
+                         *   才落一个点，画出来比上传轨迹稀一半，截图上的折角跟轨迹文件对不上；
+                         *   真机截图上的折线就是它自己那份轨迹逐点连出来的
+                         *   （2026-10-06 那场 272 点 / 2103 m = 每 2.27 秒一个点）。 */
+                        shot.add(new MapShot.P(pLat, pLon, sVal));
                     }
-                    if (emitted > 0)
-                        shot.add(new MapShot.P(pos[0] + offLatDeg, pos[1] + offLonDeg, v));
                 }
 
                 // ★★★ 位置心跳 —— 对齐真机实测节拍：
@@ -3574,12 +3645,21 @@ public class Ledao {
             log.log("      ① 轨迹   HTTP " + code + "  " + key);
             if (code != 200) { res.message = "轨迹上传失败 HTTP " + code; return res; }
 
-            // ② type=18 跑步截图（真实高德底图 + 彩色轨迹，和 App 的观感一致）
+            // ② type=18 跑步截图（真机那张：整幅高德底图 + 纯绿轨迹 + 起终点，无任何界面元素）
             String imgKey = "Public/Upload/pic/run_photo_screenshotImage/" + day + "/"
                     + (1 + rnd.nextInt(999)) + "/" + UUID.randomUUID() + ".png";
-            /* ★★★ v1.0.39（#9 截图不像截屏）：现在生成的是**整屏**，而且把这一场的
-             *   真数字印上去（里程/用时/配速/打卡数/收尾时刻）。数字全部取自
-             *   下面 stopRunV278 要发的同一批变量 —— 截图和报文对不上比没有截图更可疑。 */
+            /* ★★★ v1.0.57（docs/95）：截图改成"只画地图"，与真机逐项对齐。
+             *   实测真机那 7 张原图（work/phone_runs/shot_00..05.jpg、
+             *   work/cmp/real/real_official_20261006.jpg）**只有地图**，没有状态栏/
+             *   标题栏/成绩卡/按钮；轨迹是单一纯绿的。
+             *
+             *   ★ 还有一个细节照抄真机：**对象名以 .png 结尾，字节却是 JPEG，
+             *     Content-Type 是 image/jpeg**（work/session/auto_20261006_212849.jsonl:118
+             *     那次 PUT 就是这么发的，Content-Length 69135、头 FFD8…FFD9）。
+             *     所以下面 MapShot 压 JPEG、这里 Content-Type 用 image/jpeg、名字继续叫 .png ——
+             *     三个字段与真机完全一致，不留"名字 png 内容 jpeg"这种只有我们会犯的矛盾。
+             *
+             *   Rec 仍然照传：不印在图上，但日志里能对上这一场的数（和 stopRunV278 同一批变量）。 */
             MapShot.Rec shotRec = new MapShot.Rec();
             shotRec.km = distKm;
             shotRec.usedSec = used;
@@ -3590,11 +3670,11 @@ public class Ledao {
             shotRec.stride = lastStride;
             byte[] img = MapShot.render(shot, 540, 1059, shotRec, rnd, log);
             if (img == null) {
-                log.log("      !! 底图没拉到，改用兜底图（整屏照画，只换底图）");
+                log.log("      !! 底图没拉到，改用兜底图（照样整幅地图，只换底图）");
                 img = MapShot.fallback(540, 1059, shotRec, rnd);
             }
-            int icode = ossPutRetry(sts, imgKey, img, "image/png");
-            log.log("      ② 截图   HTTP " + icode + "  " + imgKey);
+            int icode = ossPutRetry(sts, imgKey, img, "image/jpeg");   // ★ 真机也是 image/jpeg
+            log.log("      ② 截图   HTTP " + icode + "  " + img.length + " 字节  " + imgKey);
             if (icode != 200) { res.message = "截图上传失败 HTTP " + icode; return res; }
 
             // ③ type=8 陀螺仪 / 加速度（明文 JSON）

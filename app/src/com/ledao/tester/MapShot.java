@@ -13,33 +13,48 @@ import java.net.HttpURLConnection;
 import java.net.Proxy;
 import java.net.URL;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Random;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 /**
  * MapShot —— 生成「跑步截图」（stopRunV278 的 file_img）
  *
- * <h3>真机那张图是什么</h3>
- * 真机上传的是**整屏截屏**：{@code files/.screen_shot/<ms>_<uid>.jpg}，
- * 画面里有状态栏（时间/信号/电量）、步道乐跑的标题栏、地图、彩色轨迹线，
- * 以及底部那块写着**这一场的里程/用时/配速**的成绩卡。实测尺寸 540×1059
- * （1080×2118 的屏按 0.5 缩下来，正好去掉底部导航条那一截）。
+ * <h3>真机那张图到底是什么（2026-10-30 拿 7 张原图逐张核过）</h3>
+ * 真机上传的是 {@code files/.screen_shot/<ms>_<uid>.jpg}，540×1059，**整幅就是地图**：
+ * 高德底图 + 一条**纯绿**轨迹 + 起点「青色圆点里一个白色箭头」+ 终点「青色圆环里一个白色对勾」
+ * + 左下角「高德地图」logo。<b>没有状态栏、没有标题栏、没有成绩卡、没有按钮。</b>
+ * 原图在 {@code work/phone_runs/shot_00..05.jpg} 与
+ * {@code work/cmp/real/real_official_20261006.jpg}，量出来的事实：
+ * <ul>
+ *   <li>轨迹核心像素就是 {@code (0,255,0)}，整条**一个颜色**，没有速度渐变、也没有白色描边；</li>
+ *   <li>线宽 9~11 px（540 宽下）；</li>
+ *   <li>起点圆点 r≈13.5，色 {@code #18BA7E}；终点圆环 r≈17，半透明填充 + 白色对勾；</li>
+ *   <li>字节是 <b>JPEG</b>（{@code FFD8…FFD9}），对象名却以 {@code .png} 结尾，
+ *       上传时 {@code Content-Type: image/jpeg}。</li>
+ * </ul>
  *
- * <h3>★★★ v1.0.39 之前它只有"地图 + 折线"</h3>
- * 旧实现只画高德瓦片 + 轨迹 + 起终点圆点，**一个字都没有**。后果写在 docs/71 §二.15：
- * 同一路线跑两次，两张图除了折线外**几乎逐像素相同**；底图没拉到时还会退化成一整块
- * 纯色图（{@link #fallback}），那几张在**所有账号之间一模一样**。
+ * <h3>v1.0.57：把"整屏界面"全删了（docs/95）</h3>
+ * v1.0.39~v1.0.56 画的是「状态栏 + 标题栏 + 地图 + 成绩卡 + 完成按钮」，
+ * 那是**照着一台想象中的手机画的**，真机截图里根本没有那些东西；
+ * 而且成绩卡那三列数字还被「完成」按钮整块盖住（坐标见 docs/95 §三），等于白画。
+ * 越画越像"另一个 App"，取证上一眼可辨 —— 现在改回真机的样子：只画地图。
  *
- * <p>现在按真机的信息结构整屏重画（#9），并且把这一场的**真数字**印上去（{@link Rec}）：
- * 用时、里程、配速、打卡数、收尾时刻 —— 都是 {@link Ledao#run} 当场算出来的同一批数，
- * 不是另编的。状态栏的电量/信号/运营商、地图缩放级别、卡片留白等由本场种子决定
- * （{@link #render} 的 {@code rnd} 参数），所以**跨场/跨账号不再同模板**（#15）。
+ * <h3>v1.0.58：相机参数按真机量出来的值（{@link #CAM_ZOOM}）</h3>
+ * 以前按"路线 bbox 刚好装下"算缩放，3.2 km 的路线落到 2.86 m/px —— 比真机远 3.3 倍，
+ * 看着就是"真机那张被放大了"。现在固定 0.860 m/px（等效 zoom 17.16）、中心压起点，
+ * 和真机那张逐像素量出来的相机一模一样；路线跑出画面就让它裁掉（真机也裁）。
  *
  * <h3>它仍然不是"截屏"</h3>
  * 这一条要如实说：真机那张是**系统截屏**（像素级带着该机型的 UI 细节、字体渲染、
- * 状态栏图标），我们是**按同样的版式重绘**。观感接近，取证层面不同。
+ * 状态栏图标），我们是**按同样的版式重绘地图**。观感接近，取证层面不同。
  * 想真正等同，只有"在真机上跑官方 App 时截屏"这一条路 —— 那不在本工具的能力范围。
  */
 public class MapShot {
@@ -50,6 +65,22 @@ public class MapShot {
             + "?lang=zh_cn&size=1&style=7&x=%d&y=%d&z=%d";
     private static final int TS = 256;          // 瓦片边长
 
+    /**
+     * 真机相机的缩放级别 —— **量出来的**，不是猜的。
+     *
+     * <p>反推方法（{@code work/cmp/fit_real_scale2.py}）：把 2026-10-06 21:14 那场
+     * （2.06 km / 272 点 / 616 s）的上传轨迹 {@code work/1006/run_record__119.PLAINTEXT.json}
+     * 和**真机自己上传的那张截图**逐点做 chamfer 拟合：
+     * 画面内的 235 个点全部落在绿色轨迹上（命中率 100%），平均残差 0.06 px。
+     * 拟合结果：
+     * <ul>
+     *   <li>比例尺 <b>0.860 m/px</b>（540 px 宽 = 464 m）→ 等效 zoom <b>17.16</b>；</li>
+     *   <li>地图中心就是**起点**：首点落在 (267,531)，画布中心 (270,529.5)。</li>
+     * </ul>
+     * 7 张真机样品里起点标记全部压在画布正中，所以这两条是硬事实。
+     */
+    static final double CAM_ZOOM = 17.16;
+
     /** 轨迹点：{纬度, 经度, 速度 m/s} */
     public static class P {
         public double lat, lon, spd;
@@ -57,12 +88,12 @@ public class MapShot {
     }
 
     /**
-     * 这一场要印在截图上的**数字**（#9）。
+     * 这一场的**数字**（不再印在图上，只进日志）。
      *
      * <p>全部来自 {@link Ledao#run} 的同一个变量：{@code km}/{@code usedSec} 就是
      * stopRunV278 里的 {@code distance}/{@code used_time}，{@code endSec} 就是
-     * {@code end_time}。截图与报文对不上是比"没有截图"更容易被抓的破绽，
-     * 所以这里只搬数、不造数。
+     * {@code end_time}。v1.0.57 起图面上一个字都不印（真机那张也没有），
+     * 但日志里要能和报文对得上 —— 截图与报文对不上是比"没有截图"更容易被抓的破绽。
      */
     public static class Rec {
         public double km = 0;              // 上报里程（km）
@@ -91,13 +122,13 @@ public class MapShot {
         return String.format(Locale.US, "%d'%02d\"", secPerKm / 60, secPerKm % 60);
     }
 
-    /** 状态栏时钟：{@code epoch 秒 → "21:49"} */
+    /** 时钟：{@code epoch 秒 → "21:49"}（v1.0.57 起不再印在图上，留着给日志/离线测试） */
     public static String clock(long epochSec) {
         if (epochSec <= 0) epochSec = System.currentTimeMillis() / 1000;
         return new SimpleDateFormat("HH:mm", Locale.US).format(new Date(epochSec * 1000L));
     }
 
-    /** 成绩卡上的日期：{@code "2026.10.06"} */
+    /** 日期：{@code "2026.10.06"}（同上，只给日志/测试） */
     public static String dayText(long epochSec) {
         if (epochSec <= 0) epochSec = System.currentTimeMillis() / 1000;
         return new SimpleDateFormat("yyyy.MM.dd", Locale.US).format(new Date(epochSec * 1000L));
@@ -112,169 +143,49 @@ public class MapShot {
         return (1.0 - Math.log(Math.tan(r) + 1.0 / Math.cos(r)) / Math.PI) / 2.0 * TS * (1 << z);
     }
 
-    /** 旧签名（保留给老调用方）：没有成绩数字时按 0 处理，仍然画整屏，只是数字是空的 */
+    /** 旧签名（保留给老调用方）：没有成绩数字时按 0 处理；图面与新版一致（只画地图） */
     public static byte[] render(List<P> track, int w, int h, Ledao.Log log) {
         return render(track, w, h, null, null, log);
     }
 
     /**
-     * 生成整屏截图。失败返回 null（调用方会退化成 {@link #fallback}）。
+     * 生成截图（**整幅地图**，与真机那张同构）。失败返回 null（调用方会退化成 {@link #fallback}）。
      *
      * @param w   宽（默认 540，与真机截图一致）
      * @param h   高（默认 1059）
-     * @param rec 这一场的成绩数字；可以为 null（只画地图，不印数）
-     * @param rnd 本场随机源：状态栏电量/信号/地图缩放/卡片留白都从它来 —— 跨场不同模板
+     * @param rec 这一场的数字；可以为 null —— 只影响日志，不影响画面
+     * @param rnd 本场随机源：地图缩放级别从这里来 —— 跨场不同模板
      */
     public static byte[] render(List<P> track, int w, int h, Rec rec, Random rnd, Ledao.Log log) {
         if (track == null || track.size() < 2) return null;
         Random r = rnd != null ? rnd : new Random();
 
-        /* ---- 版式：状态栏 / 标题栏 / 地图 / 成绩卡（真机那张图就是这四块） ---- */
-        int statusH = Math.round(h * 0.032f);
-        int headH = Math.round(h * 0.088f);
-        int cardH = Math.round(h * 0.190f);
-        int mapTop = statusH + headH;
-        int mapBot = h - cardH;
-
         Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         Canvas cv = new Canvas(bmp);
-        cv.drawColor(Color.WHITE);
+        /* 底色取高德瓦片自己的浅蓝底色 —— 万一有瓦片没拉回来，缺口和周围是同一个色，
+         * 不会出现 v1.0.57 那种米白色空白带（真机也不可能出现这种带子） */
+        cv.drawColor(Color.parseColor("#E3EDF5"));
 
-        /* ---- ① 状态栏 ---- */
-        Paint pt = new Paint(Paint.ANTI_ALIAS_FLAG);
-        pt.setColor(Color.parseColor("#F5F6F8"));
-        cv.drawRect(0, 0, w, statusH, pt);
-        pt.setColor(Color.parseColor("#1F2328"));
-        pt.setTextSize(statusH * 0.56f);
-        pt.setTextAlign(Paint.Align.LEFT);
-        pt.setFakeBoldText(true);
-        cv.drawText(clock(rec != null ? rec.endSec : 0), w * 0.035f, statusH * 0.72f, pt);
-        pt.setFakeBoldText(false);
-        /* 右侧：信号格 + 4G + 电量（电量与格数每场不同） */
-        int bars = 3 + r.nextInt(2);
-        float bx = w * 0.795f;
-        for (int i = 0; i < 4; i++) {
-            float bh = statusH * 0.20f * (i + 1);
-            pt.setColor(i < bars ? Color.parseColor("#1F2328") : Color.parseColor("#C7CBD1"));
-            cv.drawRect(bx + i * statusH * 0.16f, statusH * 0.70f - bh,
-                    bx + i * statusH * 0.16f + statusH * 0.10f, statusH * 0.70f, pt);
-        }
-        pt.setColor(Color.parseColor("#1F2328"));
-        pt.setTextSize(statusH * 0.46f);
-        cv.drawText("4G", bx + statusH * 0.72f, statusH * 0.70f, pt);
-        int battery = 55 + r.nextInt(42);
-        float battL = w * 0.895f, battR = w * 0.962f;
-        pt.setStyle(Paint.Style.STROKE);
-        pt.setStrokeWidth(statusH * 0.055f);
-        pt.setColor(Color.parseColor("#1F2328"));
-        cv.drawRoundRect(new RectF(battL, statusH * 0.28f, battR, statusH * 0.72f),
-                statusH * 0.10f, statusH * 0.10f, pt);
-        pt.setStyle(Paint.Style.FILL);
-        cv.drawRect(battR + statusH * 0.02f, statusH * 0.42f, battR + statusH * 0.07f,
-                statusH * 0.58f, pt);
-        pt.setColor(Color.parseColor("#12B76A"));
-        cv.drawRect(battL + statusH * 0.06f, statusH * 0.34f,
-                battL + statusH * 0.06f + (battR - battL - statusH * 0.12f) * battery / 100f,
-                statusH * 0.66f, pt);
-        pt.setTextSize(statusH * 0.42f);
-        pt.setTextAlign(Paint.Align.RIGHT);
-        cv.drawText(battery + "%", battL - statusH * 0.10f, statusH * 0.66f, pt);
+        /* ① 底图 + 轨迹 + 起终点（铺满整幅画布） */
+        drawMap(cv, track, w, 0, h, r, log);
+        /* ② 左下角「高德地图」署名（真机那张这个位置就有） */
+        drawAmapLogo(cv, w, h);
 
-        /* ---- ② 标题栏（乐跑的绿） ---- */
-        pt.setColor(Color.parseColor("#0E9F6E"));
-        cv.drawRect(0, statusH, w, mapTop, pt);
-        pt.setColor(Color.WHITE);
-        pt.setTextAlign(Paint.Align.CENTER);
-        pt.setTextSize(headH * 0.40f);
-        pt.setFakeBoldText(true);
-        cv.drawText("跑步记录", w * 0.5f, mapTop - headH * 0.36f, pt);
-        pt.setFakeBoldText(false);
-        pt.setTextSize(headH * 0.34f);
-        pt.setTextAlign(Paint.Align.LEFT);
-        cv.drawText("‹", w * 0.045f, mapTop - headH * 0.34f, pt);
-        pt.setTextAlign(Paint.Align.RIGHT);
-        cv.drawText("···", w * 0.955f, mapTop - headH * 0.34f, pt);
-
-        /* ---- ③ 地图 + 轨迹（裁在地图区里） ---- */
-        cv.save();
-        cv.clipRect(0, mapTop, w, mapBot);
-        cv.drawRect(0, mapTop, w, mapBot, tint("#EBEEE9"));
-        drawMap(cv, track, w, mapTop, mapBot, r, log);
-        cv.restore();
-        /* 地图右下角的高德署名（真机截图里那块地图也带这个） */
-        pt.setTextSize(w * 0.026f);
-        pt.setTextAlign(Paint.Align.RIGHT);
-        pt.setColor(Color.parseColor("#7A828C"));
-        cv.drawText("© 高德地图", w - w * 0.03f, mapBot - w * 0.022f, pt);
-
-        /* ---- ④ 成绩卡 ---- */
-        pt.setColor(Color.WHITE);
-        cv.drawRect(0, mapBot, w, h, pt);
-        pt.setColor(Color.parseColor("#E7E9ED"));
-        cv.drawRect(0, mapBot, w, mapBot + 1, pt);
         double km = rec != null ? rec.km : 0;
         long used = rec != null ? rec.usedSec : 0;
         int pace = (int) (used / Math.max(0.001, km));
-        float top = mapBot + cardH * 0.10f;
-        /* 大号里程 */
-        pt.setTextAlign(Paint.Align.LEFT);
-        pt.setFakeBoldText(true);
-        pt.setColor(Color.parseColor("#111827"));
-        pt.setTextSize(cardH * 0.40f);
-        String kmTxt = String.format(Locale.US, "%.2f", km);
-        cv.drawText(kmTxt, w * 0.055f, top + cardH * 0.36f, pt);
-        pt.setFakeBoldText(false);
-        pt.setTextSize(cardH * 0.16f);
-        pt.setColor(Color.parseColor("#6B7280"));
-        float kmW = pt.measureText("0000");
-        cv.drawText("公里", w * 0.055f + cardH * 0.40f + kmW * 0.62f, top + cardH * 0.36f, pt);
-        /* 三列：用时 / 配速 / 打卡 */
-        String[][] cells = {
-                {"用时", fmtDur(used)},
-                {"平均配速", fmtPace(pace) + "/公里"},
-                {"打卡点", rec != null ? (rec.hits + "/" + rec.total) : "—"},
-        };
-        float cw = (w - w * 0.11f) / 3f;
-        for (int i = 0; i < cells.length; i++) {
-            float cx = w * 0.055f + cw * i;
-            pt.setTextAlign(Paint.Align.LEFT);
-            pt.setTextSize(cardH * 0.115f);
-            pt.setColor(Color.parseColor("#9AA1AC"));
-            cv.drawText(cells[i][0], cx, top + cardH * 0.56f, pt);
-            pt.setTextSize(cardH * 0.155f);
-            pt.setColor(Color.parseColor("#111827"));
-            pt.setFakeBoldText(true);
-            cv.drawText(cells[i][1], cx, top + cardH * 0.74f, pt);
-            pt.setFakeBoldText(false);
-        }
-        /* 底部：一句话 + 绿按钮 */
-        pt.setTextAlign(Paint.Align.LEFT);
-        pt.setTextSize(cardH * 0.105f);
-        pt.setColor(Color.parseColor("#9AA1AC"));
-        cv.drawText(dayText(rec != null ? rec.endSec : 0)
-                + (rec != null && rec.cadence > 0
-                    ? String.format(Locale.US, " · 步频 %.0f · 步长 %.2f m", rec.cadence, rec.stride)
-                    : ""), w * 0.055f, h - cardH * 0.10f, pt);
-        float btnL = w * 0.055f, btnR = w - w * 0.055f;
-        float btnB = h - cardH * 0.20f, btnT = btnB - cardH * 0.30f;
-        pt.setColor(Color.parseColor("#0E9F6E"));
-        cv.drawRoundRect(new RectF(btnL, btnT, btnR, btnB), cardH * 0.15f, cardH * 0.15f, pt);
-        pt.setColor(Color.WHITE);
-        pt.setTextAlign(Paint.Align.CENTER);
-        pt.setTextSize(cardH * 0.145f);
-        pt.setFakeBoldText(true);
-        cv.drawText("完成", (btnL + btnR) / 2f, btnT + cardH * 0.205f, pt);
-        pt.setFakeBoldText(false);
 
         ByteArrayOutputStream bo = new ByteArrayOutputStream();
-        bmp.compress(Bitmap.CompressFormat.PNG, 100, bo);
+        /* ★★★ 真机那几张是 **JPEG**（对象名虽以 .png 结尾，字节是 FFD8…FFD9，34~69 KB）。
+         *   我们也压 JPEG —— 上传时 Content-Type 用 image/jpeg，与真机逐字段一致。 */
+        bmp.compress(Bitmap.CompressFormat.JPEG, 80, bo);
         bmp.recycle();
         byte[] out = bo.toByteArray();
         if (log != null)
-            log.log("      截图生成完成 " + w + "x" + h + "  " + out.length + " 字节"
-                    + "（整屏：状态栏 + 标题栏 + 地图 + 成绩卡；用时 "
-                    + fmtDur(used) + " / 里程 " + String.format(Locale.US, "%.2f", km)
-                    + " km / 配速 " + fmtPace(pace) + "）");
+            log.log("      截图生成完成 " + w + "x" + h + "  JPEG " + out.length + " 字节"
+                    + "（整幅地图：底图 + 纯绿轨迹 + 起终点，无界面元素；本场 "
+                    + fmtDur(used) + " / " + String.format(Locale.US, "%.2f", km) + " km / "
+                    + fmtPace(pace) + "）");
         return out;
     }
 
@@ -289,88 +200,233 @@ public class MapShot {
     private static void drawMap(Canvas cv, List<P> track, int w, int mapTop, int mapBot,
                                 Random rnd, Ledao.Log log) {
         int h = mapBot - mapTop;
-        double minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
-        for (P p : track) {
-            minLat = Math.min(minLat, p.lat); maxLat = Math.max(maxLat, p.lat);
-            minLon = Math.min(minLon, p.lon); maxLon = Math.max(maxLon, p.lon);
-        }
-        double padLat = Math.max(2e-4, (maxLat - minLat) * 0.22);
-        double padLon = Math.max(2e-4, (maxLon - minLon) * 0.22);
-        minLat -= padLat; maxLat += padLat; minLon -= padLon; maxLon += padLon;
+        /* ★★★ v1.0.58：取景不再"把路线塞进画面"，而是照抄真机自己的相机。
+         *
+         *   反推（work/cmp/fit_real_scale2.py）：同一场（2026-10-06 21:14，2.06 km /
+         *   272 点）的轨迹 work/1006/run_record__119.PLAINTEXT.json 与真机自己上传的
+         *   那张截图逐点做 chamfer 拟合 —— 画面内的 235 个点 100% 落在绿色轨迹上、
+         *   平均残差 0.06 px，于是两个相机参数是**量出来的**：
+         *     · 比例尺 0.860 m/px（540 px 宽 = 464 m，等效 zoom 17.16）
+         *     · 地图中心 = **起点**（首点像素 (267,531)，画布中心 (270,529.5)）
+         *
+         *   以前我们按 bbox 缩放"刚好装下"，3.2 km 的路线落到 2.86 m/px ——
+         *   比真机远 3.3 倍，看过去就是"真机那张被放大了"。高德 SDK 的相机是
+         *   固定级别跟人的，路线跑大了它**照样裁**（真机那张右边就裁掉 24 px 绿线），
+         *   所以这里不再为了"装下"而降低级别：裁掉就裁掉，和真机一个口径。 */
+        double zf = CAM_ZOOM;
+        int z = (int) Math.ceil(zf - 1e-6);
+        float k = (float) Math.pow(2.0, zf - z);                // ≤1：瓦片缩下来画
+        if (k > 1f) k = 1f;
 
-        /* 缩放级别：装得下就行；本场再随机放宽一级，别每张图都同一个比例（#15） */
-        int z = 17;
-        for (; z > 12; z--) {
-            double bw = lon2x(maxLon, z) - lon2x(minLon, z);
-            double bh = lat2y(minLat, z) - lat2y(maxLat, z);
-            if (bw <= w * 0.86 && bh <= h * 0.86) break;
-        }
-        if (rnd.nextDouble() < 0.35 && z > 13) z--;
+        P p0 = track.get(0);                                    // 相机跟着起点（= 跑完时的位置）
+        double cx = lon2x(p0.lon, z);
+        double cy = lat2y(p0.lat, z);
+        double ox = cx - (w / (double) k) / 2.0;
+        double oy = cy - (h / (double) k) / 2.0;
 
-        double cx = (lon2x(minLon, z) + lon2x(maxLon, z)) / 2.0;
-        double cy = (lat2y(minLat, z) + lat2y(maxLat, z)) / 2.0;
-        double ox = cx - w / 2.0;
-        double oy = cy - h / 2.0;
-
-        int tx0 = (int) Math.floor(ox / TS), tx1 = (int) Math.floor((ox + w) / TS);
-        int ty0 = (int) Math.floor(oy / TS), ty1 = (int) Math.floor((oy + h) / TS);
-        int total = (tx1 - tx0 + 1) * (ty1 - ty0 + 1), done = 0, got = 0;
+        int tx0 = (int) Math.floor(ox / TS), tx1 = (int) Math.floor((ox + w / k) / TS);
+        int ty0 = (int) Math.floor(oy / TS), ty1 = (int) Math.floor((oy + h / k) / TS);
         int maxTile = 1 << z;
-        for (int tx = tx0; tx <= tx1; tx++) {
+        Paint tp = new Paint(Paint.FILTER_BITMAP_FLAG);          // 缩图要开滤波，否则锯齿
+        float ts = TS * k;
+
+        /* 要拉的瓦片清单（连续缩放后一屏会有 30~40 张） */
+        ArrayList<int[]> jobs = new ArrayList<int[]>();
+        for (int tx = tx0; tx <= tx1; tx++)
             for (int ty = ty0; ty <= ty1; ty++) {
                 if (tx < 0 || ty < 0 || tx >= maxTile || ty >= maxTile) continue;
-                Bitmap t = tile(tx, ty, z);
-                done++;
-                if (t != null) {
-                    got++;
-                    cv.drawBitmap(t, (float) (tx * TS - ox), (float) (mapTop + ty * TS - oy), null);
-                    t.recycle();
-                }
+                jobs.add(new int[]{tx, ty});
+            }
+        int total = jobs.size(), got = 0;
+
+        /* ★ 并发拉：串行 40 张、每张几百毫秒，收尾流程要干等十几秒 —— 等不起。
+         *   6 个线程、单张 15 秒上限；哪张没回来就留空，不影响整张图。 */
+        Bitmap[] tiles = new Bitmap[total];
+        ExecutorService ex = Executors.newFixedThreadPool(6);
+        try {
+            final int zz = z;
+            ArrayList<Future<Bitmap>> fs = new ArrayList<Future<Bitmap>>();
+            for (int i = 0; i < total; i++) {
+                final int tx = jobs.get(i)[0], ty = jobs.get(i)[1];
+                fs.add(ex.submit(new Callable<Bitmap>() {
+                    public Bitmap call() { return tile(tx, ty, zz); }
+                }));
+            }
+            for (int i = 0; i < total; i++) {
+                try { tiles[i] = fs.get(i).get(15, TimeUnit.SECONDS); }
+                catch (Exception ignore) { /* 超时/异常：这一张留空 */ }
+            }
+        } finally {
+            ex.shutdown();
+        }
+
+        for (int i = 0; i < total; i++) {
+            Bitmap t = tiles[i];
+            if (t == null) continue;
+            got++;
+            float dx = (float) ((jobs.get(i)[0] * TS - ox) * k);
+            float dy = (float) (mapTop + (jobs.get(i)[1] * TS - oy) * k);
+            cv.drawBitmap(t, null, new RectF(dx, dy, dx + ts, dy + ts), tp);
+            t.recycle();
+        }
+        /* ★ v1.0.58：没拉回来的瓦片**补一遍**（V1.0.57 实测会缺 5~7 张，顶上一条空白带）。
+         *   补的时候串行、单张 8 秒 —— 已经等过并发那轮，这里只是兜尾巴。 */
+        int miss = total - got;
+        if (miss > 0) {
+            int tried = 0;
+            for (int i = 0; i < total; i++) {
+                if (tiles[i] != null) continue;
+                if (tried++ >= 3) break;               // 最多补 3 张，别让收尾多等半分钟
+                Bitmap t = tile(jobs.get(i)[0], jobs.get(i)[1], z);
+                if (t == null) continue;
+                got++;
+                float dx = (float) ((jobs.get(i)[0] * TS - ox) * k);
+                float dy = (float) (mapTop + (jobs.get(i)[1] * TS - oy) * k);
+                cv.drawBitmap(t, null, new RectF(dx, dy, dx + ts, dy + ts), tp);
+                t.recycle();
             }
         }
-        if (log != null) log.log("      底图瓦片 " + got + "/" + total + "  z=" + z);
+        if (log != null)
+            log.log("      底图瓦片 " + got + "/" + total + "  z=" + z
+                    + " 缩放 " + String.format(Locale.US, "%.3f", k)
+                    + "（相机 zoom " + String.format(Locale.US, "%.2f", zf)
+                    + " = 0.86 m/px，起点居中，真机实测" + (miss > 0 ? "，补拉 " + miss + " 张" : "") + "）");
         /* 一张瓦片都没拉到：画本场专属的街道网格，别交一张纯色的图（旧代码就是纯色） */
         if (got == 0) drawStreetGrid(cv, w, mapTop, h, rnd);
 
-        Paint line = new Paint(Paint.ANTI_ALIAS_FLAG);
-        line.setStyle(Paint.Style.STROKE);
-        line.setStrokeCap(Paint.Cap.ROUND);
-        line.setStrokeJoin(Paint.Join.ROUND);
-        line.setStrokeWidth(11f);
-        Paint halo = new Paint(line);
-        halo.setColor(Color.parseColor("#CCFFFFFF"));
-        halo.setStrokeWidth(17f);
+        /* ★★★ v1.0.58：真机那张的底图**明显发白**（底色 #ECF4F4 一个人占了 60% 的像素）。
+         *   把同一份轨迹的两张图逐像素对齐比一遍（work/cmp/fit_veil.py）：
+         *     不做处理  平均误差 11.7/255
+         *     盖 alpha .44 白幕后 4.99/255      ← 三通道误差同时掉一半
+         *   也就是说 App 的地图上本来就压着一层半透明白（收尾弹窗的底衬），
+         *   而轨迹和起终点标记画在白幕**之上**，所以它们照样是鲜亮的绿/青。
+         *   这里照抄：白幕只盖底图，轨迹、标记、署名都画在后面。 */
+        Paint veil = new Paint();
+        /* 幕布用**纯白**：三通道合起来的整体均值会偏蓝 8~9（真机底图更绿），
+         * 但逐像素误差最小（4.97/255）；换成偏绿的白幕虽然三个通道均值能对上，
+         * 逐像素误差反而涨到 7.84 —— 那个色差其实来自"我们的瓦片标签比真机多"，
+         * 用色偏去补它只会把整张图带歪。 */
+        veil.setColor(0x70FFFFFF);                              // A=112/255≈0.44
+        cv.drawRect(0, mapTop, w, mapBot, veil);
 
         float[] xs = new float[track.size()], ys = new float[track.size()];
         for (int i = 0; i < track.size(); i++) {
             P p = track.get(i);
-            xs[i] = (float) (lon2x(p.lon, z) - ox);
-            ys[i] = (float) (mapTop + lat2y(p.lat, z) - oy);
+            xs[i] = (float) ((lon2x(p.lon, z) - ox) * k);
+            ys[i] = (float) (mapTop + (lat2y(p.lat, z) - oy) * k);
         }
         Path path = new Path();
         path.moveTo(xs[0], ys[0]);
         for (int i = 1; i < xs.length; i++) path.lineTo(xs[i], ys[i]);
-        cv.drawPath(path, halo);
 
-        double minS = Double.MAX_VALUE, maxS = -Double.MAX_VALUE;
-        for (P p : track) { minS = Math.min(minS, p.spd); maxS = Math.max(maxS, p.spd); }
-        if (maxS - minS < 0.05) maxS = minS + 0.05;
-        for (int i = 1; i < track.size(); i++) {
-            double t = (track.get(i).spd - minS) / (maxS - minS);
-            line.setColor(speedColor(t));
-            cv.drawLine(xs[i - 1], ys[i - 1], xs[i], ys[i], line);
-        }
+        /* ★ 轨迹：单一纯绿、无渐变、无白色描边 —— 与真机逐项对齐
+         *   （真机核心像素 (0,255,0)，线宽 9~11 px @540）。 */
+        Paint line = new Paint(Paint.ANTI_ALIAS_FLAG);
+        line.setStyle(Paint.Style.STROKE);
+        line.setStrokeCap(Paint.Cap.ROUND);
+        line.setStrokeJoin(Paint.Join.ROUND);
+        line.setStrokeWidth(w * 0.0190f);          // 540 → 10.3 px
+        line.setColor(Color.rgb(0, 255, 0));
+        cv.drawPath(path, line);
 
-        Paint pt = new Paint(Paint.ANTI_ALIAS_FLAG);
-        pt.setColor(Color.parseColor("#12B76A"));
-        pt.setStyle(Paint.Style.FILL);
-        cv.drawCircle(xs[0], ys[0], 13f, pt);
-        pt.setColor(Color.WHITE);
-        cv.drawCircle(xs[0], ys[0], 6f, pt);
-        pt.setColor(Color.parseColor("#F04438"));
-        cv.drawCircle(xs[xs.length - 1], ys[ys.length - 1], 13f, pt);
-        pt.setColor(Color.WHITE);
-        cv.drawCircle(xs[xs.length - 1], ys[ys.length - 1], 6f, pt);
+        /* ★ v1.0.58：终点**先画、起点后画**，并且两者靠得太近时干脆不画终点。
+         *   真机那张轨迹是闭环（首尾相距 2.5 m），画布正中只有那个「青色圆点 + 白箭头」的
+         *   起点标记，没有被终点圆环压住；我们把 E 画在收尾点上，闭环时它和 S 重叠成
+         *   一个"环里带勾"的怪标记 —— 真机没有这种东西。 */
+        float endX = xs[xs.length - 1], endY = ys[ys.length - 1];
+        boolean farEnough = Math.hypot(endX - xs[0], endY - ys[0]) > w * 0.045f;   // 540 → 24 px
+        if (farEnough) drawEndMark(cv, endX, endY, w);
+        drawStartMark(cv, xs[0], ys[0], w);
+    }
+
+    /** 起点：淡白光晕 + 青色实心圆 + 白色向上箭头（真机那几张就这样，不是字母 A） */
+    private static void drawStartMark(Canvas cv, float x, float y, int w) {
+        float r = w * 0.0250f;                     // 540 → 13.5 px
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        p.setColor(0x55FFFFFF);                    // 圆点外面那圈很淡的白
+        cv.drawCircle(x, y, r * 1.55f, p);
+        p.setColor(Color.parseColor("#18BA7E"));
+        cv.drawCircle(x, y, r, p);
+        Path a = new Path();                       // 箭头：尖顶 + 底部中间凹进去
+        a.moveTo(x, y - r * 0.58f);
+        a.lineTo(x + r * 0.48f, y + r * 0.44f);
+        a.lineTo(x, y + r * 0.14f);
+        a.lineTo(x - r * 0.48f, y + r * 0.44f);
+        a.close();
+        p.setColor(Color.WHITE);
+        cv.drawPath(a, p);
+    }
+
+    /** 终点：淡白光晕 + 半透明青色圆 + 青色圆环 + 白色对勾（真机的收尾标记） */
+    private static void drawEndMark(Canvas cv, float x, float y, int w) {
+        float r = w * 0.0315f;                     // 540 → 17 px
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        p.setColor(0x3DFFFFFF);
+        cv.drawCircle(x, y, r * 1.28f, p);
+        p.setColor(0x4D12A46E);                    // 半透明填充（透出底图）
+        cv.drawCircle(x, y, r, p);
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(w * 0.0046f);             // 环宽 ≈2.5 px
+        p.setColor(Color.parseColor("#12A46E"));
+        cv.drawCircle(x, y, r, p);
+        Path c = new Path();
+        c.moveTo(x - r * 0.42f, y + r * 0.02f);
+        c.lineTo(x - r * 0.12f, y + r * 0.32f);
+        c.lineTo(x + r * 0.44f, y - r * 0.28f);
+        p.setColor(Color.WHITE);
+        p.setStrokeCap(Paint.Cap.ROUND);
+        p.setStrokeJoin(Paint.Join.ROUND);
+        p.setStrokeWidth(w * 0.0069f);
+        cv.drawPath(c, p);
+        p.setStyle(Paint.Style.FILL);
+    }
+
+    /**
+     * 左下角「高德地图」署名。真机原图那块（work/cmp/zoom_logo_real.png）是：
+     * 一个浅绿小圆角方块 + 一只**比方块大得多**的蓝色纸飞机（尖朝右上、尾巴在左下、
+     * 中间一道折口）+ 上方一段浅蓝弧 + 右边灰字「高德地图」。
+     * 位置/字号按 540×1059 原图量：方块约 18×18、飞机宽约 35、文字高约 17.6、
+     * 整块贴左边距 ≈8 px、文字基线离底 ≈11 px。
+     */
+    private static void drawAmapLogo(Canvas cv, int w, int h) {
+        float u = w * 0.0325f;                    // 一个 u = 17.6 px @540（字高）
+        float x0 = w * 0.0155f;
+        float yb = h - w * 0.0205f;               // 文字基线
+
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        p.setColor(Color.parseColor("#C9F2A8"));  // 浅绿圆角方块（飞机后面露出一条边）
+        cv.drawRoundRect(new RectF(x0, yb - u * 1.02f, x0 + u * 1.06f, yb),
+                u * 0.30f, u * 0.30f, p);
+
+        p.setStyle(Paint.Style.STROKE);           // 上方那一段浅蓝弧
+        p.setStrokeWidth(u * 0.16f);
+        p.setColor(Color.parseColor("#8ADBF3"));
+        cv.drawArc(new RectF(x0 - u * 0.10f, yb - u * 1.55f, x0 + u * 1.35f, yb - u * 0.10f),
+                -72f, 108f, false, p);
+        p.setStyle(Paint.Style.FILL);
+
+        /* 蓝色纸飞机：两片（上片深蓝、折下那片浅蓝），中间那道接缝就是真机上的折口 */
+        Path wing = new Path();
+        wing.moveTo(x0 + u * 2.08f, yb - u * 1.19f);    // 尖（右上，出一截框）
+        wing.lineTo(x0 + u * 0.09f, yb + u * 0.06f);    // 尾巴（左下）
+        wing.lineTo(x0 + u * 1.10f, yb - u * 0.34f);    // 折口
+        wing.close();
+        p.setColor(Color.parseColor("#1E7FE0"));
+        cv.drawPath(wing, p);
+
+        Path fold = new Path();
+        fold.moveTo(x0 + u * 2.08f, yb - u * 1.19f);    // 尖
+        fold.lineTo(x0 + u * 1.10f, yb - u * 0.34f);    // 折口
+        fold.lineTo(x0 + u * 1.85f, yb - u * 0.46f);    // 右
+        fold.close();
+        p.setColor(Color.parseColor("#5CB8F0"));
+        cv.drawPath(fold, p);
+
+        p.setColor(Color.parseColor("#7E868F"));  // 「高德地图」
+        p.setTextSize(u);
+        p.setTextAlign(Paint.Align.LEFT);
+        cv.drawText("高德地图", x0 + u * 2.20f, yb - u * 0.08f, p);
     }
 
     /** 底图全挂时的兜底：画一张本场专属的"街道图"（不是纯色，跨账号不同） */
@@ -399,15 +455,6 @@ public class MapShot {
         }
     }
 
-    /** 0=慢(绿) 1=快(红)，中间过黄 */
-    private static int speedColor(double t) {
-        t = Math.max(0, Math.min(1, t));
-        int r, g;
-        if (t < 0.5) { double u = t / 0.5; r = (int) (0x2E + (0xF5 - 0x2E) * u); g = (int) (0xC4 + (0xD0 - 0xC4) * u); }
-        else { double u = (t - 0.5) / 0.5; r = (int) (0xF5 + (0xE0 - 0xF5) * u); g = (int) (0xD0 + (0x3A - 0xD0) * u); }
-        return Color.rgb(r, g, 0x2E);
-    }
-
     // ---------------------------------------------------------------- 拉瓦片
     private static Bitmap tile(int x, int y, int z) {
         for (int tryHost = 0; tryHost < 4; tryHost++) {
@@ -427,7 +474,7 @@ public class MapShot {
                 while ((n = is.read(buf)) > 0) bo.write(buf, 0, n);
                 is.close();
                 byte[] d = bo.toByteArray();
-                if (d.length < 500) continue;              // 空白/错误瓦片
+                if (d.length < 60) continue;               // 真·错误瓦片（正常空白瓦片也有 200 字节）
                 return android.graphics.BitmapFactory.decodeByteArray(d, 0, d.length);
             } catch (Exception e) {
                 // 换下一个瓦片服务器
@@ -439,7 +486,7 @@ public class MapShot {
     }
 
     /**
-     * 兜底：整屏照画，只是底图换成一张本场专属的街道示意图。
+     * 兜底：照样只画地图，只是底图换成一张本场专属的街道示意图。
      * （旧版这里是一整块绿色 + 一个浅色方块 —— 那几张图在所有账号之间**逐像素相同**。）
      */
     public static byte[] fallback(int w, int h) {
@@ -451,10 +498,11 @@ public class MapShot {
             Random r = rnd != null ? rnd : new Random();
             Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
             Canvas cv = new Canvas(bmp);
-            cv.drawColor(Color.WHITE);
+            cv.drawColor(Color.parseColor("#F3F4F0"));
             drawStreetGrid(cv, w, 0, h, r);
+            drawAmapLogo(cv, w, h);
             ByteArrayOutputStream bo = new ByteArrayOutputStream();
-            bmp.compress(Bitmap.CompressFormat.PNG, 100, bo);
+            bmp.compress(Bitmap.CompressFormat.JPEG, 80, bo);
             bmp.recycle();
             return bo.toByteArray();
         } catch (Throwable t) {
