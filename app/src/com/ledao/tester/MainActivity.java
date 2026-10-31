@@ -343,9 +343,21 @@ public class MainActivity extends Activity implements Ledao.Log {
 
         // ★ 界面优化 #9（2026-10-07）：进软件默认弹「开发者留言」。
         //   首次停留 30 秒才能关；之后每次进来都弹，但可勾「未来均不弹出」。
+        /* ★★★ v1.0.57（2026-10-31 用户第 10 条）：**装完新版第一次进来，先弹 25 秒公告**，
+         *   关掉之后再弹开发者留言。两条都不能被吞：
+         *     · 公告该弹的时候，留言等它关掉再弹（不是不弹）；
+         *     · 公告已经弹过（同一个版本只弹一次），就走原来那条路，行为一个字没变。
+         *   判据在 Announce.shouldShow（比 versionCode），所以覆盖安装 / 升级必弹一次。 */
         ui.postDelayed(() -> {
             if (isFinishing()) return;
-            if (DevNote.shouldShow(this)) DevNote.show(this, null);
+            if (Announce.shouldShow(this)) {
+                Announce.show(this, () -> {
+                    if (!isFinishing() && !isDestroyed() && DevNote.shouldShow(this))
+                        DevNote.show(this, null);
+                });
+            } else if (DevNote.shouldShow(this)) {
+                DevNote.show(this, null);
+            }
         }, 700);
 
         /* ★★★ v1.0.33（用户第 4 条）：**进助手不再自动跳到步道乐跑**。
