@@ -1,16 +1,16 @@
 {
   "schema": 1,
   "app": "com.ledao.tester",
-  "ver": 157,
-  "name": "1.0.57",
+  "ver": 158,
+  "name": "1.0.58",
   "min": 0,
   "size": 2183614,
-  "sha256": "4cd16080849007399d87808c93cd88ad8f9c9eae0ad2ad4de7b93c4668a41aae",
-  "note": "更新公告、修复一些bug",
+  "sha256": "0a9dfc91409f4c27dc6834e4feff6bd6132034a0f6bda0c34926fbb1099fe1c0",
+  "note": "更新了一些bug",
   "page": "https://github.com/BAB2007/yuda-run-helper",
   "ping": "",
   "urls": [
-    "https://raw.githubusercontent.com/BAB2007/yuda-run-helper/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.57.apk",
-    "https://gitee.com/BAB2007/yuda-run-helper/raw/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.57.apk"
+    "https://raw.githubusercontent.com/BAB2007/yuda-run-helper/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.58.apk",
+    "https://gitee.com/BAB2007/yuda-run-helper/raw/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.58.apk"
   ]
 }
