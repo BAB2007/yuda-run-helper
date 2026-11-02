@@ -3003,7 +3003,10 @@ public class Ledao {
                         if (hit.length() > 0) hit.append(',');
                         hit.append(kp.id);
                     }
-                    // 途经点只用于界面显示「路过」，不参与打卡
+                    // 途经点：跑区里恰好路过 30 m 内的**其它**打卡点。它们**不参与打卡**
+                    // （不进 point_ids、不进 logPoints、也不进界面上的「已打卡 N」）——
+                    // ★ v1.0.58：以前这个集合的 size 被当成「已打卡数」显示，才冒出了
+                    //   「已打卡 3 次」；现在它只用来在日志里报一句「路过 N 个」。
                     for (int k = 0; k < cps.size(); k++) {
                         if (doneIds.contains(cids.get(k))) continue;
                         if (dist(qp, cps.get(k)) >= 30) continue;
@@ -3148,8 +3151,10 @@ public class Ledao {
                     String badStr = bad > 0.5
                             ? String.format(Locale.US, "（进度差 %.0f m）", bad) : "";
                     log.log(String.format(Locale.US,
-                            "      #%-3d 有效里程 %5.0f m%s  分配对 [%s]  lpi0×%d(%s)",
-                            i, validM, badStr, sg, lpi0Count, lastLpi0Key));
+                            "      #%-3d 有效里程 %5.0f m%s  分配对 [%s]  已打卡 %d/%d（途经点 %d 个不计）"
+                                    + "  lpi0×%d(%s)",
+                            i, validM, badStr, sg, keyHitCount(keyPts), keyPts.size(),
+                            doneIds.size(), lpi0Count, lastLpi0Key));
                 }
                 // ★★★ 2026-10-07 修正：**中途不再空刷 getTimestampV278**。
                 //   旧代码每 10 拍（≈60 秒）空调一次（不带 game_id/point_ids），把
@@ -3272,10 +3277,14 @@ public class Ledao {
                 //   抓包实证：真机是进跑步页就验（type=0），验完才 getTimestampV278，
                 //   然后才开跑；中途那次由上面这段负责。
                 // ★ 实时刷新界面上的「跑步路线」小地图
-                try { log.onRoute(all, rp.pts, pos[0], pos[1], doneIds.size(), v); }
+                /* ★★★ v1.0.58：这里原来传的是 `doneIds.size()` —— 那个数里**含途经点**，
+                 *   所以会出现「已打卡 3 次」这种界面数 > 报备数的情况（用户给的那张
+                 *   v1.0.45 截图红圈就是它）。改成只数 keyPts（= 系统报备的那两个）。 */
+                final int keyHit = keyHitCount(keyPts);
+                try { log.onRoute(all, rp.pts, pos[0], pos[1], keyHit, v); }
                 catch (Throwable ignore) { }
                 // ★ v1.0.25：同一拍把进度喂给后台通知（切走时用户就看它）
-                try { log.onTick(validM, totalM, (long) elapsedSec, doneIds.size()); }
+                try { log.onTick(validM, totalM, (long) elapsedSec, keyHit); }
                 catch (Throwable ignore) { }
                 // ★ 把本次 HTTP 耗时从间隔里扣掉，否则实际配速会被网络延迟拖慢
                 //   （实测：不扣的话 2.2 m/s 会跑成 511 s/km，超出 480 的规则上限）
@@ -4902,6 +4911,28 @@ public class Ledao {
         public double hitLat, hitLon;
 
         public String tag() { return id + "(" + address + ")"; }
+    }
+
+    /**
+     * 界面上那个「已打卡 N 次」到底该数几个 —— **只数本次系统报备的那两个点**（keyPts）。
+     *
+     * <p>★★★ v1.0.58（2026-11-02 用户第 11 条，旧版截图红圈处的那个 bug）：
+     *   以前 {@code onRoute} / {@code onTick} 传的是 {@code doneIds.size()}，而
+     *   {@code doneIds} 里装的是**跑区里所有路过 30 m 内的打卡点**（含"途经点"）——
+     *   于是界面上出现「已打卡 3 次」，可服务端那一场只认 2 个：
+     *   {@code setRunLocationRecord.point_ids} 恒等于 keyPts 的两个 id、
+     *   {@code logPoints} 也只有 keyPts 两条。
+     *   ⇒ 第三个纯粹是界面自说自话，跟报备给服务端的数**对不上**。
+     *
+     * <p>所以这里单独开一个函数，只认 keyPts。返回值天然 ≤ {@code keyPts.size()}
+     *   （本项目是 2，即服务端 {@code run_rule.min_log_num}）。
+     */
+    public static int keyHitCount(java.util.List<LogPt> keyPts) {
+        int n = 0;
+        if (keyPts != null) {
+            for (LogPt kp : keyPts) if (kp != null && kp.isSignUp) n++;
+        }
+        return n;
     }
 
     /** i0.j()：注意 type==1 的必经点**无条件入选，不看距离**。 */
