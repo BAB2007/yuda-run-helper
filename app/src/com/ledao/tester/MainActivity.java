@@ -142,6 +142,8 @@ public class MainActivity extends Activity implements Ledao.Log {
     private Button btnRun, btnSniff, btnClear, btnProxyHelp, btnCopyLog, btnCa, btnRealId,
             btnFacePre, btnFaceMid, btnMini;
     private Button btnMenu;
+    /** ★ v1.0.61：「···」—— 数据发送对照表（{@link PacketTable}）的入口 */
+    private Button btnMore;
     /** 地图卡片的容器 */
     private CampusMapView map;
     private LinearLayout routeBody, drawerPanel, markGrid;
@@ -194,8 +196,29 @@ public class MainActivity extends Activity implements Ledao.Log {
      */
     private static volatile boolean FACE_USED_THIS_RUN = false;
 
+    /**
+     * ★★★ v1.0.60（2026-11-03 用户第 2 条）：这一场的两张照片**已经存进留存库**了
+     * （{@link FaceVault}，只留最近 10 天，给"起跑查重"当依据）。
+     *
+     * <p>两个置位点：
+     * <ol>
+     *   <li>起跑前人脸核验通过 —— 照片真的传上 OSS 并拿到了 id，这是"用过"最硬的证据；</li>
+     *   <li>这一场真跑出了里程 —— 服务端若配 {@code start_status=0}，一次脸都不验，
+     *       但这一场确实用了这两张，同样要留。</li>
+     * </ol>
+     *
+     * <p>每场开头必须清回 false：不清的话第二场会以为"这场已经留过了"，一张都不留，
+     * 查重就永远查不到东西。
+     */
+    private static volatile boolean FACE_ARCHIVED_THIS_RUN = false;
+
     /** ★ v1.0.55：老版那张单张人脸照片只迁一次（进程内） */
     private boolean legacyFaceChecked = false;
+
+    /** ★ v1.0.60 自检用：这次自检写进留存库的文件名 —— 收尾时只删它，绝不误删真照片 */
+    private String vaultTestEntryName = "";
+    /** ★ v1.0.60 自检用：自检前那份身份串（自检会临时塞个假身份，收尾要按原样放回去） */
+    private String vaultTestIdentBackup = "";
 
     /**
      * ★ v1.0.25：这个界面已经被销毁了（划掉 / 系统回收）。
@@ -322,6 +345,31 @@ public class MainActivity extends Activity implements Ledao.Log {
         log("");
 
         healStaleProxy();
+
+        /* ★★★ v1.0.60（用户 2026-11-03 第 1 条）：「留存照片，将最近 10 天的照片保存
+         *   （仅保存最近 10 天）」。
+         *
+         *   进软件先把过期的那批清掉：用户可能十来天不跑，那就没有"开跑"这个时机，
+         *   过期照片会一直躺在 {@code files/face_vault/} 里 —— 而用户要的是"仅保存最近
+         *   10 天"，多一天都不该留。几十个文件的 list + delete，放后台线程，
+         *   绝不在启动路径上等它，也绝不因为清不掉而拦任何操作。 */
+        new Thread(() -> {
+            try {
+                long now = System.currentTimeMillis();
+                int gone = FaceVault.prune(getFilesDir(), now);
+                int left = FaceVault.count(getFilesDir(), now);
+                if (gone > 0) {
+                    log("🗂 人脸留存库清掉了 " + gone + " 张过期的（只留最近 "
+                            + FaceVault.KEEP_DAYS + " 天），现在 " + left + " 张");
+                } else if (left > 0) {
+                    log("🗂 人脸留存库：最近 " + FaceVault.KEEP_DAYS + " 天共 " + left
+                            + " 张（只在本机、只用于起跑查重，过期自动删）");
+                }
+            } catch (Throwable ignore) {
+                /* 清不掉不影响任何事：真正查重前还会再清一次 */
+            }
+        }, "face-vault-prune").start();
+
         handleIntent(getIntent());
         refreshIdentBox();
         askNotifyPermission();
@@ -343,21 +391,13 @@ public class MainActivity extends Activity implements Ledao.Log {
 
         // ★ 界面优化 #9（2026-10-07）：进软件默认弹「开发者留言」。
         //   首次停留 30 秒才能关；之后每次进来都弹，但可勾「未来均不弹出」。
-        /* ★★★ v1.0.57（2026-10-31 用户第 10 条）：**装完新版第一次进来，先弹 25 秒公告**，
-         *   关掉之后再弹开发者留言。两条都不能被吞：
-         *     · 公告该弹的时候，留言等它关掉再弹（不是不弹）；
-         *     · 公告已经弹过（同一个版本只弹一次），就走原来那条路，行为一个字没变。
-         *   判据在 Announce.shouldShow（比 versionCode），所以覆盖安装 / 升级必弹一次。 */
+        /* ★ 2026-11-03（用户第一条）：**去掉「更新公告」**。
+         *   v1.0.57 加的 25 秒公告（Announce）整个删掉 —— 类删了，这里回到 v1.0.57
+         *   之前的单弹窗：进软件只弹开发者留言，不再有"先看公告 25 秒"这一步。
+         *   （点「开始跑步」前那些人脸/换脸的提醒，现在都写在侧栏《使用说明》里。） */
         ui.postDelayed(() -> {
             if (isFinishing()) return;
-            if (Announce.shouldShow(this)) {
-                Announce.show(this, () -> {
-                    if (!isFinishing() && !isDestroyed() && DevNote.shouldShow(this))
-                        DevNote.show(this, null);
-                });
-            } else if (DevNote.shouldShow(this)) {
-                DevNote.show(this, null);
-            }
+            if (DevNote.shouldShow(this)) DevNote.show(this, null);
         }, 700);
 
         /* ★★★ v1.0.33（用户第 4 条）：**进助手不再自动跳到步道乐跑**。
@@ -645,6 +685,23 @@ public class MainActivity extends Activity implements Ledao.Log {
         tt.addView(tvTitle);
         tt.addView(tvVer);
         bar.addView(tt, UiKit.weight());
+        /* ★★★ v1.0.61（用户 2026-11-03）：「最上面三条横杠旁边增加 '···'，
+         *   点开后是步道乐跑和助手发送数据包的对照表」。
+         *   放在 ☰ **左边**：☰ 一直是这一屏最右角那颗键（一直在那儿，别动它），
+         *   ··· 挨着它往左排一格，两颗都是同一款浅灰胶囊、同样 15sp。
+         *   表本身在 {@link PacketTable} 里 —— 弹窗、列宽、分段都在那边，这里只管挂个入口。 */
+        btnMore = Q.btn(this, "···", Q.GRAY, 15f);
+        LinearLayout.LayoutParams moreLp = new LinearLayout.LayoutParams(Q.dp(this, 48),
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        moreLp.rightMargin = Q.dp(this, 6);      // 和 ☰ 之间留一点缝，别贴成一坨
+        btnMore.setLayoutParams(moreLp);
+        /* ★ 这两行是试出来的：Q.btn 的左右内边距各 14dp，44dp 宽的键里只剩 16dp 给字，
+         *   而 "···" 三个点实测要 22dp 以上 —— 于是它被压成了竖排的「⋮」，还撑高了 3 倍。
+         *   把内边距收成 0、并锁成单行：「···」就摆平了，高度也和 ☰ 一样是 38dp。 */
+        btnMore.setPadding(0, Q.dp(this, 7), 0, Q.dp(this, 8));
+        btnMore.setSingleLine(true);
+        btnMore.setOnClickListener(v -> PacketTable.show(this));
+        bar.addView(btnMore);
         btnMenu = Q.btn(this, "☰", Q.GRAY, 15f);
         btnMenu.setLayoutParams(new LinearLayout.LayoutParams(Q.dp(this, 48),
                 LinearLayout.LayoutParams.WRAP_CONTENT));
@@ -1313,6 +1370,7 @@ public class MainActivity extends Activity implements Ledao.Log {
          *   ☰ 是浅灰胶囊、状态条是奶油胶囊、日志区是奶油底 —— 底永远是浅色，
          *   深色主题下若跟着换成浅字就看不清了（Q.on 那套"按底选字"才是对的口径）。 */
         btnMenu.setTextColor(Q.on(Q.GRAY));
+        if (btnMore != null) btnMore.setTextColor(Q.on(Q.GRAY));
         tvIdentBrief.setTextColor(qInk());
         /* ★ 2026-10-17：这两行原来是 `btnEdit.setTextColor(acc)` 与给 `etIdent` 上色 ——
          *   那两个控件（手动修改身份）已按用户第 3 条删除。 */
@@ -1507,54 +1565,16 @@ public class MainActivity extends Activity implements Ledao.Log {
         return sameFaceImage(a, b);
     }
 
-    /** 两个图片文件是不是"同一张脸照"（字节相同，或 24×24 灰度几乎重合） */
-    private static boolean sameFaceImage(File a, File b) {
-        try {
-            byte[] x = readFileBytes(a), y = readFileBytes(b);
-            if (x != null && y != null && java.util.Arrays.equals(x, y)) return true;
-        } catch (Throwable ignore) { }
-        try {
-            float[] p = faceFingerprint(a), q = faceFingerprint(b);
-            if (p == null || q == null) return false;
-            double sum = 0;
-            for (int i = 0; i < p.length; i++) sum += Math.abs(p[i] - q[i]);
-            return sum / p.length <= 3.0;
-        } catch (Throwable t) {
-            return false;              // 比不出来就当"不一样"，绝不因此拦住用户
-        }
-    }
-
     /**
-     * 缩成 24×24 灰度当指纹（只读，不写盘，不改用户文件）。
+     * 两个图片文件是不是"同一张脸照"（字节相同，或 24×24 灰度几乎重合）。
      *
-     * <p>先用 {@code inJustDecodeBounds} 拿尺寸，再按尺寸选 {@code inSampleSize} ——
-     * 一张 4000×3000 的自拍也只解出 ~100×75，几十毫秒就完，不会在界面线程上卡住。
+     * <p>★ v1.0.60：判据本身**一个字没改**，只是搬家了 —— 现在住在
+     * {@link FaceVault#sameImage(File, File)}。留这张皮的原因有两个：
+     * 这里四个调用点（按钮文案的「⚠ 一样」、落盘前拦截、预览框、起跑前核对）不用动；
+     * 而"留存库查重"用的也必须是**同一套判据** —— 两处各写一遍迟早会跑偏。
      */
-    private static float[] faceFingerprint(File f) {
-        try {
-            android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
-            o.inJustDecodeBounds = true;
-            BitmapFactory.decodeFile(f.getAbsolutePath(), o);
-            if (o.outWidth <= 0 || o.outHeight <= 0) return null;
-            o.inJustDecodeBounds = false;
-            o.inSampleSize = Math.max(1, Math.min(o.outWidth, o.outHeight) / 96);
-            Bitmap bm = BitmapFactory.decodeFile(f.getAbsolutePath(), o);
-            if (bm == null) return null;
-            Bitmap s = Bitmap.createScaledBitmap(bm, 24, 24, true);
-            float[] out = new float[24 * 24];
-            for (int y = 0; y < 24; y++) {
-                for (int x = 0; x < 24; x++) {
-                    int c = s.getPixel(x, y);
-                    out[y * 24 + x] = 0.299f * Color.red(c)
-                            + 0.587f * Color.green(c) + 0.114f * Color.blue(c);
-                }
-            }
-            if (s != bm) s.recycle();
-            bm.recycle();
-            return out;
-        } catch (Throwable t) {
-            return null;
-        }
+    private static boolean sameFaceImage(File a, File b) {
+        return FaceVault.sameImage(a, b);
     }
 
     /**
@@ -1637,8 +1657,14 @@ public class MainActivity extends Activity implements Ledao.Log {
         new File(getFilesDir(), "face_pre_new.jpg").delete();
         new File(getFilesDir(), "face_mid_new.jpg").delete();
         if (ledao != null) ledao.resetFaceState();
+        /* ★ v1.0.60：这一场用过的照片在留存库里另有一份（给后面 10 天的查重用），
+         *   这里删的是"待上传"那一份 —— 两者不是同一批文件，别让用户以为没删干净。 */
+        boolean keptInVault = FACE_ARCHIVED_THIS_RUN;
+        FACE_ARCHIVED_THIS_RUN = false;            // 下一场重新算
         log("🧑 " + why + "：两张人脸照片已删除（" + n + " 个文件，含备份）"
-                + " —— 下一场要重新传两张新的");
+                + " —— 下一场要重新传两张新的"
+                + (keptInVault ? "；查重库里另留了一份，最多 " + FaceVault.KEEP_DAYS
+                        + " 天、过期自动删（只用来查重，不上传）" : ""));
         final MainActivity A = LIVE != null ? LIVE : this;
         ui.post(A::updateFaceBtns);
     }
@@ -2118,7 +2144,11 @@ public class MainActivity extends Activity implements Ledao.Log {
         sb.append("· 就去操场、路边、树下拍 —— 画面里要能看见天空 / 楼 / 树 / 跑道；\n");
         sb.append("· 光线要足、脸占满画面，别戴帽子墨镜、别用重美颜。\n\n");
         sb.append("【3】只在本场用一次\n");
-        sb.append("· 这一场跑完，两张照片都会自动删除；\n");
+        sb.append("· 这一场跑完，两张照片就从「待上传」里删掉了；\n");
+        /* ★ v1.0.60（用户第 1 条「留存照片」）：以前这里写的是"两张都会自动删除"，
+         *   现在留存库会留一份副本 —— 话得跟着改，不能让用户以为删干净了。 */
+        sb.append("· 本机另外留一份副本，只留最近 ").append(FaceVault.KEEP_DAYS)
+          .append(" 天、只用来查重（同一张 10 天内再传会被拦下），不上传、过期自动删；\n");
         sb.append("· 下一场要重新传两张新的（换来换去才像真人每次现拍）。\n");
         tips.setText(sb.toString());
         box.addView(tips);
@@ -2535,6 +2565,78 @@ public class MainActivity extends Activity implements Ledao.Log {
         Toast.makeText(this, "两张一样，请换一张不一样的", Toast.LENGTH_LONG).show();
     }
 
+    /**
+     * ★★★ v1.0.60（用户 2026-11-03 第 1 条）：「留存照片，将最近 10 天的照片保存
+     * （仅保存最近 10 天）」。
+     *
+     * <p>把这一场用的两张照片各复制一份进 {@link FaceVault}。三个调用点都不在界面线程上
+     * （跑前核验回调 / 跑完收尾），所以这里直接做磁盘 IO，几百 KB 也就几毫秒。
+     *
+     * <h3>为什么时机是"核验通过 / 真跑出里程"，而不是"用户选完照片"</h3>
+     * 选完照片那一刻，照片还没发出去，用户随时可能换掉 —— 那时就留，等于把
+     * "换了一张新的"也算成用过，下一场反而会被自己的备份拦住。只有真发出去了
+     * 才算"这一场用过"，这是查重唯一说得通的判据。
+     *
+     * <p>整个方法**不许抛**：留存只是附加能力，失败就少查一张，绝不能影响跑步。
+     */
+    private void archiveFaces(String why) {
+        if (FACE_ARCHIVED_THIS_RUN) return;        // 这一场已经留过了（核验通过 + 跑完两个时机）
+        try {
+            long now = System.currentTimeMillis();
+            File a = FaceVault.put(getFilesDir(), faceFile(SLOT_PRE), SLOT_PRE, now);
+            File b = FaceVault.put(getFilesDir(), faceFile(SLOT_MID), SLOT_MID, now);
+            int left = FaceVault.count(getFilesDir(), now);
+            if (a == null && b == null) {
+                /* 两张都没写进去（盘满了 / 文件被删了）—— 不置位，跑完那次还会再试一次 */
+                log("⚠ 照片留存没做成（两张都没写进库）—— 不影响跑步，只是这一场不参与查重");
+                return;
+            }
+            FACE_ARCHIVED_THIS_RUN = true;
+            log("🗂 已把本场照片留一份（" + why + "）："
+                    + (a != null ? "跑前 " + (a.length() / 1024) + "KB" : "跑前 没留成")
+                    + "、" + (b != null ? "跑中 " + (b.length() / 1024) + "KB" : "跑中 没留成")
+                    + " —— 库里现在 " + left + " 张（只留最近 " + FaceVault.KEEP_DAYS
+                    + " 天、过期的自动删；只在本机、只用来查重）");
+        } catch (Throwable t) {
+            log("⚠ 照片留存出错了（不影响跑步）：" + Err.one(t));
+        }
+    }
+
+    /**
+     * ★★★ v1.0.60（用户 2026-11-03 第 2 条）：起跑查重命中时弹这个窗。
+     *
+     * <p>正文第一句是用户给的原话 —— 「您的照片在最近存在重复上传，请重新上传照片」，
+     * 一个字没改（这句是结论，必须原样）。后面才是三段补充：撞上的是哪一张、
+     * 那一场是什么时候留的、为什么这一场直接不开跑。
+     *
+     * <p>为什么把"没开跑"说出来：以前这类问题都是跑完才由服务端打分（status=59），
+     * 用户以为"跑完了就行"；这里要让他知道**这一次什么都没发出去**、换个照片就没事。
+     *
+     * <p>「重新上传」直接打到对应那个槽的选图器 —— 用户不用自己回忆该点哪颗键。
+     */
+    private void showDupFaceDialog(final String which, final String when, final int inVault) {
+        try {
+            android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(this)
+                    .setTitle("🧑 照片重复了")
+                    .setMessage("您的照片在最近存在重复上传，请重新上传照片\n\n"
+                            + "撞上的是「" + slotLabel(which) + "」这张：留存库里 " + when
+                            + " 那一场留的就是同一张照片（最近 " + FaceVault.KEEP_DAYS
+                            + " 天一共留了 " + inVault + " 张，跑前、跑中都在里面）。\n\n"
+                            + "同一张脸照连着几场反复出现，人工审查最先看出来的就是这里 ——"
+                            + "所以这一场直接没开跑，也没往服务端传任何东西。\n\n"
+                            + "点「重新上传」换一张最近没用过的（同一张图另存 / 微信转过一手"
+                            + "也算同一张），再点「▶ 开始跑步」。")
+                    .setPositiveButton("重新上传", (d, w) -> pickFacePhoto(which))
+                    .setNegativeButton("知道了", null)
+                    .create();
+            dlg.show();
+            Q.style(this, dlg);
+        } catch (Throwable t) {
+            logFail("弹「照片重复」提示", t);
+        }
+        Toast.makeText(this, "照片重复了，请重新上传照片", Toast.LENGTH_LONG).show();
+    }
+
 
     private static void copyFile(File a, File b) throws Exception {
         java.io.InputStream in = new java.io.FileInputStream(a);
@@ -2873,6 +2975,7 @@ public class MainActivity extends Activity implements Ledao.Log {
          *   缺了就当场说清楚缺哪张、点哪颗键，不开跑。 */
         if (!facePreflight()) return;
         FACE_USED_THIS_RUN = false;        // 这一场还没真的用掉照片（用了才删）
+        FACE_ARCHIVED_THIS_RUN = false;    // ★ v1.0.60：这一场还没留存（用上了才留）
 
         // ★ 界面优化 #1（2026-10-07）：手动设置已删除，**只有系统自动一种模式**。
         //   里程 2.0~5.0 随机（步进 0.1，看起来更像随手定的目标）；
@@ -3086,6 +3189,43 @@ public class MainActivity extends Activity implements Ledao.Log {
                 log("⚠ 后台运行那两件套没挂全（不影响跑步）：" + t);
             }
             try {
+            /* ★★★ v1.0.60（用户 2026-11-03 第 2 条）：「每次跑步进行一次查重，
+             *   重了就弹窗口：'您的照片在最近存在重复上传，请重新上传照片'」。
+             *
+             *   放在**跑步线程的第一件事**，理由有三个：
+             *   ① 必须在任何上传之前 —— 照片一旦传上去，就已经"重复上传"了，
+             *      再弹窗也晚了（服务端那边留着记录）；
+             *   ② 它要解码库里最多几十张 JPEG（每张几十毫秒），放界面线程会卡一下，
+             *      放这里用户只是在界面上看到「准备起跑…」多停一会儿；
+             *   ③ 走的是本场自己的 try/finally —— 查重命中就 return，
+             *      RUN_ACTIVE / 按钮 / 屏幕常亮由 finally 统一收干净，不留半开状态。
+             *
+             *   比的是**最近 10 天留存库**里的全部照片（不管当时是"跑前"还是"跑中"）：
+             *   用户要防的就是"同一张脸照反复出现"，而它可能是上次跑前、这次的跑中。
+             *   库里只有"以前那几场"，当前这两张还没进去（见 archiveFaces），不会自撞。 */
+            final long dupT0 = System.currentTimeMillis();
+            final File dupPre = FaceVault.findSame(getFilesDir(), faceFile(SLOT_PRE), dupT0);
+            final File dupMid = dupPre != null ? null
+                    : FaceVault.findSame(getFilesDir(), faceFile(SLOT_MID), dupT0);
+            if (dupPre != null || dupMid != null) {
+                final String which = dupPre != null ? SLOT_PRE : SLOT_MID;
+                final String when = FaceVault.when(dupPre != null ? dupPre : dupMid);
+                final int inVault = FaceVault.count(getFilesDir(), dupT0);
+                log("⚠ 起跑查重撞上了：「" + slotLabel(which) + "」这张和留存库里 "
+                        + when + " 那一场留的是同一张 —— 本场**不开跑**");
+                log("   留存库（最近 " + FaceVault.KEEP_DAYS + " 天，共 " + inVault + " 张）："
+                        + "换一张没在最近用过的照片，再点「▶ 开始跑步」。");
+                ui.post(() -> {
+                    setRunBtn(false);
+                    setStatus("⚠ 照片重复了 —— 这一场没开跑，换一张再点「▶ 开始跑步」");
+                    showDupFaceDialog(which, when, inVault);
+                });
+                return;
+            }
+            log("🗂 起跑查重：留存库里最近 " + FaceVault.KEEP_DAYS + " 天共 "
+                    + FaceVault.count(getFilesDir(), dupT0) + " 张，跑前 / 跑中这两张都没重复 ✅"
+                    + "（耗时 " + (System.currentTimeMillis() - dupT0) + " ms）");
+
             // ★ 先抢会话：结束步道乐跑 → 用手上令牌确认可用
             if (!prepareSession(L)) {
                 final String msg = lastPrepareError;
@@ -3130,7 +3270,13 @@ public class MainActivity extends Activity implements Ledao.Log {
              *     ② 这一场真跑出了有效里程 —— 服务端若配 start_status=0，可能一次脸都没验，
              *        但只要真跑成了，这两张照片也是"本场的"，按用户要求一起删。
              *   标志在 finally 里被消费，见 {@link #wipeFacePhotos}。 */
-            if (r.distance != null && r.distance.length() > 0) FACE_USED_THIS_RUN = true;
+            if (r.distance != null && r.distance.length() > 0) {
+                FACE_USED_THIS_RUN = true;
+                /* ★ v1.0.60：服务端若配了 start_status=0，这一场可能一次脸都没验
+                 *   （onFacePre 不会来），但照片确实是这一场用的 —— 也得留一份，
+                 *   否则下次把同一张再传上来时查重查不到。 */
+                archiveFaces("这一场真跑出了里程");
+            }
             persistIdent(L);
             ui.post(() -> {
                 log("");
@@ -4501,8 +4647,10 @@ public class MainActivity extends Activity implements Ledao.Log {
     //  以前写的是 `log("!! " + e)` —— 打出来只有异常类名，不知道在哪一步炸的。
     //  现在统一走这两个方法：位置（类名.方法:行号）+ 中文原因 + 原始异常。
     // ==================================================================
-    /** 打一条错误日志：`!! [位置] 中文原因（原始异常）` */
-    private void logFail(String what, Throwable e) {
+    /** 打一条错误日志：`!! [位置] 中文原因（原始异常）`
+     *  <p>★ v1.0.61：从 {@code private} 放开到包内 —— {@link PacketTable} 画表失败时
+     *  要回这条日志里报一句（那张表只是说明，画不出来不能拦着用户跑步，也不能哑掉）。 */
+    void logFail(String what, Throwable e) {
         log("      !! " + what + " 失败");
         log("         ├ 位置：" + or(Err.where(e), "(不在本工程代码里)"));
         log("         ├ 原因：" + Err.hint(e));
@@ -4741,7 +4889,15 @@ public class MainActivity extends Activity implements Ledao.Log {
          *   跑完（不管成没成）要把两张一起删。通过才算用掉：没通过的话服务端可能根本没
          *   收到图（本地拦下 / 服务端抽风），那时删照片是白删 —— 而 Err.faceAdvice 给的
          *   建议正是"这次不用换照片，等会儿再点开始跑步"，删了就跟建议打架了。 */
-        if (ok) FACE_USED_THIS_RUN = true;
+        if (ok) {
+            FACE_USED_THIS_RUN = true;
+            /* ★★★ v1.0.60（用户 2026-11-03 第 1 条）：这张照片**真的传出去了**
+             *   （服务端回了 status=1 和一个 run_face_verify_id）—— 这就是"这一场用过"，
+             *   存一份进留存库，往后 10 天里谁再传它，起跑查重就会拦下来。
+             *   没通过时**不留**：那时候照片多半压根没发出去（本地就拦下了 / 服务端
+             *   抽风），留了反而会让下一场用同一张时被误判成"重复上传"。 */
+            archiveFaces("跑前人脸核验通过");
+        }
         final MainActivity dst = (LIVE != null) ? LIVE : this;
         dst.ui.post(() -> {
             if (ok) {
@@ -4901,10 +5057,150 @@ public class MainActivity extends Activity implements Ledao.Log {
      *       上传照片」这三步按真节奏重放一遍（① 0 s / ② 2.5 s / ③ 6.5 s /
      *       11 s 收卡片）。这三步真跑时要等 500 m、还得联网 + 会话活着，
      *       验收时不可能每次等一遍。**不联网、不上传、不碰账号**。</li>
+     *   <li>{@code vault} —— ★ v1.0.60（用户 2026-11-03）：「留存照片 + 每次跑步查重」。
+     *       用**两张当场画出来的合成图**走一遍完整链路：写进留存库 → 同一张查重命中 →
+     *       另一张不误杀 → 把这两张贴进两个槽 → 自动点「开始跑步」→ 应被查重拦下并弹出
+     *       「您的照片在最近存在重复上传，请重新上传照片」→ 11 秒后自动收尾
+     *       （还原你原来的照片、删掉自检写进库的那一张）。**不联网、不上传、不跑步**。</li>
      * </ul>
      */
+    /**
+     * ★★★ v1.0.60（用户 2026-11-03）：「留存照片 + 每次跑步查重」这条路的自检。
+     *
+     * <p>为什么要专门留一条：这条路的两个关键点**都只在"真传过照片 + 真跑过"之后才
+     * 存在** —— 留存库要有东西、查重要撞上。验收机上既没有照片也没有活会话，
+     * 靠手点根本走不到，那就等于"改完只能靠想象"（这个项目在这上面栽过好几次）。
+     *
+     * <p>所以这里用**两张当场画出来的合成图**把整条链路走一遍，而且最后那一步是
+     * **真的调 {@link #startRun()}**：如果查重没拦住，它会继续走到网络（那正是要抓的 bug）。
+     * 为避免真的发请求 / 真的改身份，收尾会把身份和两个槽的照片**按原样放回去**。
+     */
+    private void selfTestVault() {
+        log("[自检] ① 人脸留存 / 起跑查重 —— 全在本地，不联网、不跑步、不碰账号");
+        final long now = System.currentTimeMillis();
+        final File a = new File(getFilesDir(), "vaulttest_a.jpg");
+        final File c = new File(getFilesDir(), "vaulttest_c.jpg");
+        try {
+            writeTestJpeg(a, 0xFF3366CC, 0);        // 蓝底 + 小圆
+            writeTestJpeg(c, 0xFFCC3366, 3);        // 粉底 + 大圆（和 a 完全不像）
+            int before = FaceVault.count(getFilesDir(), now);
+            File put = FaceVault.put(getFilesDir(), a, SLOT_PRE, now);
+            vaultTestEntryName = put == null ? "" : put.getName();
+            log("[自检] ② 留存写入：" + (put != null
+                    ? "✅ files/" + FaceVault.DIR + "/" + put.getName()
+                    : "❌ 没写进去"));
+            File hit = FaceVault.findSame(getFilesDir(), a, now);
+            log("[自检] ③ 同一张再查重：" + (hit != null
+                    ? "✅ 命中（" + FaceVault.when(hit) + " 那一场、" + FaceVault.slotOf(hit) + "）"
+                    : "❌ 没命中 —— 查重等于没做"));
+            File miss = FaceVault.findSame(getFilesDir(), c, now);
+            log("[自检] ④ 换一张完全不同的查重：" + (miss == null
+                    ? "✅ 不重复（没误杀）" : "❌ 被误判成重复：" + miss.getName()));
+            log("[自检] ⑤ 库里现在 " + FaceVault.count(getFilesDir(), now) + " 张（自检前 "
+                    + before + " 张）；窗口 = 最近 " + FaceVault.KEEP_DAYS + " 天，"
+                    + "目录 files/" + FaceVault.DIR);
+
+            backupFaceSlot(SLOT_PRE);
+            backupFaceSlot(SLOT_MID);
+            copyFile(a, faceFile(SLOT_PRE));
+            copyFile(c, faceFile(SLOT_MID));
+            updateFaceBtns();
+            if (identCache == null || identCache.trim().length() == 0) {
+                vaultTestIdentBackup = "";
+                identCache = "uid=selftest&token=selftest";   // 只为走到查重那一步，不会发出去
+                log("[自检] （身份原本是空的 —— 临时塞个假身份，收尾会清掉）");
+            } else {
+                vaultTestIdentBackup = identCache;
+            }
+            log("[自检] ⑥ 两张自检图已放进「跑前 / 跑中」（你原来的照片已备份，收尾放回去）——"
+                    + " 1.5 秒后自动点一次「开始跑步」：跑前那张就在留存库里，"
+                    + "预期被查重拦下、弹「您的照片在最近存在重复上传，请重新上传照片」");
+            ui.postDelayed(this::startRun, 1500);
+            ui.postDelayed(this::selfTestVaultCleanup, 11000);
+        } catch (Throwable t) {
+            log("[自检] 留存 / 查重自检出错：" + Err.one(t));
+        }
+    }
+
+    /** 自检收尾：只删自检写进库的那一张，恢复两个槽的照片和身份 */
+    private void selfTestVaultCleanup() {
+        try {
+            if (vaultTestEntryName.length() > 0) {
+                File f = new File(new File(getFilesDir(), FaceVault.DIR), vaultTestEntryName);
+                boolean gone = !f.exists() || f.delete();
+                log("[自检] ⑦ 清掉自检写进留存库的那张：" + (gone ? "✅" : "❌ 没删掉"));
+                vaultTestEntryName = "";
+            }
+            restoreFaceSlot(SLOT_PRE);
+            restoreFaceSlot(SLOT_MID);
+            new File(getFilesDir(), "vaulttest_a.jpg").delete();
+            new File(getFilesDir(), "vaulttest_c.jpg").delete();
+            /* 身份：原本空的就清掉（startRun 把它写进了偏好），原本有就放回去 */
+            try {
+                if (vaultTestIdentBackup.length() == 0) {
+                    identCache = "";
+                    AppPrefs.sp(this).edit().remove("ident").apply();
+                } else {
+                    identCache = vaultTestIdentBackup;
+                    AppPrefs.sp(this).edit().putString("ident", vaultTestIdentBackup).apply();
+                }
+                refreshIdentBox();
+            } catch (Throwable ignore) { }
+            vaultTestIdentBackup = "";
+            updateFaceBtns();
+            log("[自检] ⑧ 收尾完成：两个槽的照片 / 身份都已还原，留存库现在 "
+                    + FaceVault.count(getFilesDir(), System.currentTimeMillis()) + " 张");
+        } catch (Throwable t) {
+            log("[自检] 收尾出错：" + Err.one(t));
+        }
+    }
+
+    /** 画一张"人不像人、但确实是张 JPEG"的测试图（自检专用，不进相册、不联网） */
+    private static void writeTestJpeg(File f, int color, int ring) throws Exception {
+        Bitmap bm = Bitmap.createBitmap(480, 640, Bitmap.Config.ARGB_8888);
+        android.graphics.Canvas cv = new android.graphics.Canvas(bm);
+        cv.drawColor(color);
+        android.graphics.Paint p = new android.graphics.Paint();
+        p.setColor(0xFF000000 | ((~color) & 0xFFFFFF));
+        cv.drawCircle(240, 320, 90 + ring * 45, p);
+        FileOutputStream out = new FileOutputStream(f);
+        bm.compress(Bitmap.CompressFormat.JPEG, 88, out);
+        out.close();
+        bm.recycle();
+    }
+
+    /** 自检前把这个槽的照片备份一份（没有就什么都不做） */
+    private void backupFaceSlot(String which) {
+        File bak = new File(getFilesDir(), which + ".vaultbak");
+        bak.delete();
+        File f = faceFile(which);
+        if (!f.exists() || f.length() == 0) return;
+        try { copyFile(f, bak); } catch (Throwable ignore) { }
+    }
+
+    /** 自检后把这个槽恢复成备份那份（本来就没有 → 删掉自检塞进去的） */
+    private void restoreFaceSlot(String which) {
+        File bak = new File(getFilesDir(), which + ".vaultbak");
+        File f = faceFile(which);
+        try {
+            if (bak.exists() && bak.length() > 0) {
+                f.delete();
+                copyFile(bak, f);
+            } else {
+                f.delete();
+            }
+            bak.delete();
+        } catch (Throwable ignore) { }
+    }
+
     private void runSelfTest(String kind) {
         if (isFinishing()) return;
+        /* ★★★ v1.0.60：留存 / 查重（这条只在"真传过照片 + 真跑过"之后才有意义，
+         *   验收机上两样都没有 —— 所以自带合成照片，见 selfTestVault）。 */
+        if ("vault".equals(kind)) {
+            selfTestVault();
+            return;
+        }
         if ("background".equals(kind)) {
             /* ★★★ v1.0.54（用户第 65 轮）：**白名单 / 唤醒锁这两段删掉了** ——
              *   它们都是为"息屏继续跑"服务的，功能已经整体删除。
@@ -5269,85 +5565,36 @@ public class MainActivity extends Activity implements Ledao.Log {
     // ==================================================================
     //  侧边栏文案
     // ==================================================================
-    /* ★★ 2026-10-10（v1.0.29）：这份文案是用户能看到的唯一"说明书"，三处必须改：
-     *   ① 去掉 markdown 星号 —— 侧边栏是普通 TextView，星号会被原样画出来
-     *      （用户看到的是"两个星号夹一段字"，不是加粗）。这条规则以前只管弹窗，漏了这里。
-     *   ② 补上 v1.0.25 之后的行为：切走 / 划掉最近任务都不会停跑，
-     *      要停必须回来点「■ 停止跑步」。不写清楚，用户划掉以后会以为停不掉。
-     *   ★ v1.0.54：整段改成「跑步期间屏幕要亮着」——「息屏也能跑」那句已经删除。
-     *   ③ 写清"什么时候会跳到步道乐跑"（★ v1.0.33：只有「📲 提取令牌」和
-     *      「📥 载入步道乐跑并抓取身份」这两个按钮会跳，助手不会自己跳）。
-     *   ★ 文案只此一份；仓库里的《使用说明.md》与它同源，改一处要一起改。
-     *   ★ 2026-10-21：按用户要求把【跑步期间可以走开】从 33 行砍到 8 行
-     *     （只留"能走开 / 能划掉 / 被冻住怎么办"三件事），并补一句
-     *     "开跑前先把步道乐跑从后台划掉"，免得跑到一半被顶下线。 */
+    /* ★★ 2026-11-03：按用户口述整段重写，只留六块 ——
+     *   【使用说明】【跑步参数设置】【地图用法】【位置标注 / 图片】【计分规则】【注意】。
+     *   · 【计分规则】一个字没动（用户原话「原样保持不变」）；
+     *   · 其余五块照用户给的短句，不扩写：用户要的是"照着做就行"，不是原理；
+     *   · 全文不放 markdown 星号 —— 侧边栏是普通 TextView，星号会原样画出来；
+     *   · 末尾只留「有其他不明白的可以联系我」，不再堆技术解释。
+     *   ★ 文案只此一份；仓库里的《使用说明.md》与它同源，改一处要一起改。 */
     private static final String HELP_TEXT =
-            "【三步走】\n"
-          + "1. 装证书（只需一次）\n"
-          + "   侧边栏 → 🔐 安装抓包证书 → 系统弹窗点「确定」。\n"
-          + "   装好后主界面状态栏会显示「证书已就绪」。\n\n"
-          + "2. 点「▶ 开始跑步」\n"
-          + "   身份已经在手上时，接下来全自动：\n"
-          + "     ① 确认令牌还能用（不能用会当场告诉你怎么办）\n"
-          + "     ② 结束步道乐跑的进程（单会话登录，两边同时在线会互顶）\n"
-          + "     ③ 开始跑步，地图上会实时画出轨迹\n"
-          + "   第一次用、或者身份过期了：先点「📲 提取令牌」——\n"
-          + "   它会带你到步道乐跑转一圈把身份取回来。只有这一步会跳过去，\n"
-          + "   助手自己不会突然跳到别的 App 里。\n\n"
-          + "3. 跑完点「📋 复制日志」\n"
-          + "   一次复制全部原始日志，只把个人标识（uid / 学号 /\n"
-          + "   设备号 / 登录令牌）换成【已隐藏】；签名、时间戳、里程、\n"
-          + "   坐标、服务端响应等一律原样保留，可以直接发人排查。\n\n"
-          + "【跑步期间屏幕要亮着】\n"
-          + "· 开跑后助手会把屏幕锁住 —— 只要助手在前台，屏幕不会自己灭。\n"
-          + "  不要手动按电源键灭屏（这一版不再尝试「灭掉屏幕继续跑」，\n"
-          + "  那条路各家 ROM 差别太大，做不整齐）。\n"
-          + "· 切到别的应用可以，但别太久：屏幕一灭，系统随时可能把整个进程\n"
-          + "  冻住。真被冻了助手不会装没事 —— 日志里写「⚠ 系统把助手冻住了\n"
-          + "  X 秒」，冻住的秒数照算用时、里程按当时速度补回。\n"
-          + "· 切走后右上角有个小窗，秒还在跳就说明没被系统冻住。\n"
-          + "· 想更稳：首页「🪟 迷你小窗」开一次悬浮窗权限；还不行就把系统的\n"
-          + "  「自启动 / 后台活动」放开（向导第 ④ 步）。\n"
-          + "· 划掉不算停：从最近任务划掉、重新打开就能接管（日志会从磁盘捞回来）；\n"
-          + "  但它不会停 —— 要停必须回来点「■ 停止跑步」。\n"
-          + "· 但步道乐跑不能留在后台：开跑前先在最近任务里把它划掉，\n"
-          + "  不然两边抢同一个会话，刷到一半会被顶下线。\n\n"
-          + "【参数怎么设】\n"
-          + "· 只有一个「系统自动设置」，不用选、也没有按钮。\n"
-          + "  点「开始跑步」就是自动模式：\n"
-          + "    里程 2.0~5.0 公里、配速 3.5~6.0 分/公里，每次随机；\n"
-          + "    路线沿校园道路生成，起点随机但一定在能跑通的路上；\n"
-          + "    速度是连续变化的曲线（起跑有加速、收尾有减速、\n"
-          + "    中途缓慢游走），不是每段跳一个数。\n\n"
-          + "【地图怎么用】\n"
-          + "· 两指捏合缩放，单指拖动\n"
-          + "· 点水滴标注 → 跳到当前位置并放大\n"
-          + "· 点「换路线」→ 当场换一条预览路线（里程和打卡点一起换，\n"
-          + "  点「开始跑步」跑的就是白框里这一条）\n"
-          + "· 跑步时地图会自动跟着你走\n"
-          + "· 标题栏点一下即可收起；收起后不会自己弹回来\n\n"
+            "【使用说明】\n"
+          + "1. 点击「迷你小窗」，开启小窗权限 —— 方便后面刷跑的时候可以干别的事情。\n"
+          + "2. 上传跑前人脸照片和跑后人脸照片。\n"
+          + "3. 点击「📲 提取令牌」，提取个人令牌信息。\n"
+          + "4. 点击「▶ 开始跑步」，等待刷跑完成。\n"
+          + "！！！！中途不要重新进入步道乐跑，最好直接给步道乐跑从后台划掉！！！！\n"
+          + "有其他不明白的可以联系我。\n\n"
+          + "【跑步参数设置】\n"
+          + "此软件自动随机设置路线，自动规划步频、速度等参数。\n"
+          + "为避免不必要的麻烦，不可自己设置参数。\n\n"
+          + "【地图用法】\n"
+          + "高德地图怎么用它就怎么用。\n\n"
           + "【位置标注 / 图片】\n"
-          + "· 侧边栏 → 🙂 定位标注 / 头像：内置 46 张图（点一下即用），\n"
-          + "  也可以上传自己的图片，或选「不用图片」走纯色水滴。\n"
-          + "· 侧边栏 → 🏃 水滴颜色：水滴的描边/底色。\n\n"
+          + "用处几乎为 0，可以不用管。\n\n"
           + "【计分规则】\n"
           + "· 单次里程 ≥ 2.00 公里\n"
           + "· 配速 3'00\" ~ 8'00\" 每公里\n"
           + "· 经过 ≥ 2 个打卡点（跑区内共 14 个）\n"
           + "· 每天只计 1 次\n\n"
           + "【注意】\n"
-          + "· 助手不会自己跳到步道乐跑。要取身份只有两条路：点「📲 自动\n"
-          + "  提取」，或者点「📥 载入步道乐跑并抓取身份」——两个按钮都会\n"
-          + "  明说要去步道乐跑；其余时候它老老实实待在原地。\n"
-          + "· 步道乐跑是单会话登录。本程序会在开跑前自动结束它的进程、\n"
-          + "  抢过会话；令牌要是已经被它刷掉了，助手会停下来告诉你\n"
-          + "  重新取一次（不会自作主张跳过去）。\n"
-          + "· 开跑前先把步道乐跑从后台划掉（最近任务里上滑清掉），跑步期间\n"
-          + "  也别再打开它 —— 两边同时在线会互相顶掉，刷到一半就断了。\n"
-          + "· 中途会随机刷一次脸，用你设置的自拍自动完成；停下来那\n"
-          + "  十几秒是正常的，那一段里程本来就不计入有效里程。\n"
-          + "· 抓包（VPN）只在需要时开，抓到就自动关，系统代理栏位始终不动。\n"
-          + "· 本工具只作用于本机已登录的那个账号，无法给别人刷记录。";
+          + "· 刷跑期间不要重新进入步道乐跑，会顶掉会话，可以直接给它从后台划掉。\n"
+          + "· 一定要换脸，且一定要符合我描述的要求，后台会留存。";
 
     /** 侧边栏里的开发者留言 —— 与启动弹窗（DevNote.MESSAGE）共用同一份文案，改一处即可 */
     private static final String DEV_TEXT = DevNote.MESSAGE;
