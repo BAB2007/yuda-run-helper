@@ -394,10 +394,22 @@ public class MainActivity extends Activity implements Ledao.Log {
         /* ★ 2026-11-03（用户第一条）：**去掉「更新公告」**。
          *   v1.0.57 加的 25 秒公告（Announce）整个删掉 —— 类删了，这里回到 v1.0.57
          *   之前的单弹窗：进软件只弹开发者留言，不再有"先看公告 25 秒"这一步。
-         *   （点「开始跑步」前那些人脸/换脸的提醒，现在都写在侧栏《使用说明》里。） */
+         *   （点「开始跑步」前那些人脸/换脸的提醒，现在都写在侧栏《使用说明》里。）
+         *
+         * ★★★ 2026-11-05（用户第 100 轮）：「更新软件，进入弹一个公告，5秒后可以进行删除…
+         *   …加一个点击直接跳转的按钮」。于是 {@link Announce} **换了个内容回来**：
+         *   锁 5 秒（不是 25 秒）、正文是一句网站推广、多一颗「🌐 打开网站」的键。
+         *   排序：先公告（这一版的事）→ 关掉之后才轮到开发者留言（长期挂着的），
+         *   两个弹窗串行，不叠在一起。
+         *   只有"这一版还没弹过"才弹；弹过就记 {@code announce_ver}，重进不再弹。 */
         ui.postDelayed(() -> {
             if (isFinishing()) return;
-            if (DevNote.shouldShow(this)) DevNote.show(this, null);
+            final Runnable afterAnnounce = () -> {
+                if (isFinishing() || isDestroyed()) return;
+                if (DevNote.shouldShow(this)) DevNote.show(this, null);
+            };
+            if (Announce.shouldShow(this)) Announce.show(this, afterAnnounce);
+            else afterAnnounce.run();
         }, 700);
 
         /* ★★★ v1.0.33（用户第 4 条）：**进助手不再自动跳到步道乐跑**。
@@ -5004,6 +5016,7 @@ public class MainActivity extends Activity implements Ledao.Log {
      *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest flash
      *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest notify
      *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest devnote
+     *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest announce
      *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest face
      *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest background
      *   adb shell am start -n com.ledao.tester/.MainActivity --es selftest pay
@@ -5403,6 +5416,14 @@ public class MainActivity extends Activity implements Ledao.Log {
             // 留言弹窗平时勾了「不再弹出」就看不到了，自检里强制看一次
             DevNote.show(this, null);
             log("[自检] 开发者留言弹窗（看那颗可复制的 QQ 键）");
+            return;
+        }
+        if ("announce".equals(kind)) {
+            /* ★ 2026-11-05（v1.0.62）：公告 —— 5 秒锁 + 一颗「🌐 打开网站」。
+             *   走 showForTest：**不记已读**，所以自检验完再正常启动一次，该弹还会弹。
+             *   那颗键真的会拉系统浏览器（真机验收时看得到跳转），不是假动作。 */
+            Announce.showForTest(this);
+            log("[自检] 公告（" + Announce.LOCK_SEC + " 秒后可关；「🌐 打开网站」会真的跳浏览器）");
             return;
         }
         if ("face".equals(kind)) {
