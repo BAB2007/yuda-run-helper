@@ -353,8 +353,21 @@ public class Ledao {
      *   本客户端没有相机人脸模块，默认 "0"；外面若拿到真凭据可以注入进来。
      */
     public volatile String faceVerifyId = "0";
-    /** 服务端 run_face_verify_config.middle_distance（真机是 600 m）—— 仅用于日志展示 */
+    /** 服务端 run_face_verify_config.middle_distance —— 刷脸点的**下界**，不是实际米数 */
     public volatile int faceMiddleDistance = 600;
+    /**
+     * ★★★ 本场真正刷脸的米数（每场开跑时抽一次，抽好这场就不再变）。
+     *
+     * <p>真机（4.3.2 `RunHelper.j0()`）不是跑到 `middle_distance` 就弹，而是**每场现抽**：
+     * <pre>
+     *   hi   = 规则里程 × 1000 − 50        （我校 2.00 km → 1950）
+     *   face = middle_distance + rand[0, hi − middle_distance]   （2 km → [600, 1950]）
+     *   hi &lt; middle → 0 = 整场不弹（真机 randomFace=0 同义）
+     * </pre>
+     * 真机记录里是 968 / 1019 / 1033 / 1182 / 1360 / 1668 / 1772 —— **一次 600 都没有**。
+     * 以前我们把 600 写死，等于每场都在同一个位置停，本身就是可纵向比对的特征。
+     */
+    public volatile double faceAtM = 0;
     /**
      * 人脸核验时机：**起跑后多少秒**。
      *
@@ -2074,6 +2087,7 @@ public class Ledao {
                       double intervalSec, double lat0, double lon0) {
         stopped = false;
         faceMiddleDone = false;      // ★ 每场跑步重置「中途已核验」标志
+        faceAtM = 0;                 // ★ 本场刷脸米数每场重抽（读到规则后再算）
         faceOk = false;              // ★ 每场跑步重置「本场真的验过脸」标志
         /* ★★★ 2026-10-10：还要重置身份证那张「上一次核验 id」。
          * 以前漏了这一句 —— 上一场遗留的 run_face_verify_id 会被当成"这条链的开头"
@@ -2357,11 +2371,40 @@ public class Ledao {
                         faceStopStatus = "1".equals(fc.optString("stop_status", "0"));
                         log.log("      人脸核验规则：开始=" + (faceStartStatus ? "要" : "不要")
                                 + "，中途=" + (faceMiddleStatus ? (faceMiddleNum + " 次，"
-                                + "第 1 次在 " + faceMiddleDistance + " m 处") : "不要")
+                                + "第 1 次基准 " + faceMiddleDistance + " m（实际米数每场现抽）") : "不要")
                                 + "，收尾=" + (faceStopStatus ? "要" : "不要")
                                 + "，超时=" + fc.optString("timeout_sec") + " s");
                     }
                 }
+            }
+
+            /* ★★★ 每一场开跑前抽一次「本场刷脸米数」—— 和真机 `RunHelper.j0()` 同一个公式：
+             *     hi   = 规则里程 × 1000 − 50
+             *     face = middle_distance + rand[0, hi − middle_distance]
+             *   抽不出来（hi < middle）→ 0：整场不弹中途人脸（真机 randomFace=0 同义）。
+             *   以前这里是死写 600 —— 每场都在同一个位置停，这件事本身就能被纵向比对出来。 */
+            if (faceMiddleStatus && faceMiddleDistance > 0) {
+                double ruleMinM = 2000.0;
+                try {
+                    JSONArray tra = bd.optJSONArray("time_rule_arr");
+                    if (tra != null && tra.length() > 0) {
+                        for (int ti = 0; ti < tra.length(); ti++) {
+                            JSONObject tr = tra.optJSONObject(ti);
+                            if (tr == null) continue;
+                            double v = tr.optDouble("min_distance", 0);
+                            if (v > 0) { ruleMinM = v * 1000.0; break; }
+                        }
+                    }
+                } catch (Throwable ignore) { }
+                double hi = ruleMinM - 50.0;
+                if (faceMiddleDistance <= hi) {
+                    faceAtM = faceMiddleDistance + rnd.nextInt((int) (hi - faceMiddleDistance) + 1);
+                }
+                log.log(String.format(Locale.US,
+                        "      ★ 本场刷脸点：%.0f m（服务端基准 %d m，规则里程 %.2f km → 区间 "
+                                + "[%d, %.0f]%s）",
+                        faceAtM, faceMiddleDistance, ruleMinM / 1000.0, faceMiddleDistance, hi,
+                        faceAtM > 0 ? "，每场重抽一个" : " —— 抽不出来，本场不弹"));
             }
 
             // ---- 3.2) ★★★ 真正的选点：逐行复刻真机 ya/i0.f()（docs/15）
@@ -2524,7 +2567,7 @@ public class Ledao {
                      *   所以只有「这一对不是预览那一对」时才把真实值塞进去 —— 是预览那一对
                      *   时必须一个参数都不动，否则同一对点同一种子也会生成另一条线，
                      *   「点开始跑步就跑这一条」就成了假话（PlanCheck ③b 专门盯着这条）。 */
-                    if (!samePair) o.faceM = faceMiddleStatus ? faceMiddleDistance : 0;
+                    if (!samePair) o.faceM = (int) faceAtM;
                     long t0 = System.currentTimeMillis();
                     RoutePlan.Result rr = RoutePlan.generate(routeNet, uA, uB, seed, o);
                     long ms = System.currentTimeMillis() - t0;
@@ -2685,13 +2728,16 @@ public class Ledao {
              *   暂停完才传照片 —— 于是 distance 比路线几何短那一段（缺口）。
              *   ★ v1.0.44：缺口按距离给（30~38 m），不再按秒给，见下面的状态声明。
              *   2.00 km 那道门几乎不受影响（最多少 38 m），不用预扣。 */
-            if (faceMiddleStatus) {
+            if (faceMiddleStatus && faceAtM > 0) {
                 log.log(String.format(Locale.US,
-                        "      ★ 中途刷脸在 %d m 处：到点**暂停**，接下来 30~38 m 不落点"
+                        "      ★ 中途刷脸在 %.0f m 处（本场抽的，服务端基准 %d m）：到点**暂停**，"
+                                + "接下来 30~38 m 不落点"
                                 + "（真机点距最大 34.8 m，同一个量级；约 7~11 秒）"
                                 + " —— 轨迹上留一段缺口，那一段算无效里程；"
                                 + "走完才传照片，然后接着跑",
-                        faceMiddleDistance));
+                        faceAtM, faceMiddleDistance));
+            } else if (faceMiddleStatus) {
+                log.log("      ★ 中途刷脸：本场**不会弹**（规则里程太短抽不出点，真机同样不弹）");
             }
             List<MapShot.P> shot = new ArrayList<>();     // 画截图用
             // ★★★ GPS 采样缓冲：{lat, lon, 速度(m/s), 累计米, 绝对秒}。
@@ -3185,7 +3231,7 @@ public class Ledao {
                 //
                 //   照抄真机：type=2，带上开始那次的 run_face_verify_id 把链串起来。
                 //   非致命 —— 失败只记日志，收尾照跑（便于看服务端到底怎么判）。
-                if (faceMiddleStatus && !faceMiddleDone && totalM >= faceMiddleDistance) {
+                if (faceMiddleStatus && !faceMiddleDone && faceAtM > 0 && totalM >= faceAtM) {
                     faceMiddleDone = true;
                     /* ★★★ v1.0.43（用户第 31 轮：「我所想要的就是缺口的效果」）。
                      *
@@ -3212,8 +3258,8 @@ public class Ledao {
                     faceInvalid = true;
                     faceInvalidM = 0;
                     log.log(String.format(Locale.US,
-                            "      ★ ① 弹扫脸：跑到 %.0f m（服务端要求 %d m 处）—— **暂停**，先不传照片",
-                            totalM, faceMiddleDistance));
+                            "      ★ ① 弹扫脸：跑到 %.0f m（本场抽到 %.0f m 处）—— **暂停**，先不传照片",
+                            totalM, faceAtM));
                     log.log(String.format(Locale.US,
                             "      ★ ② 缺口：%.0f → %.0f m 这一段**不落一个点**（%.1f m，"
                                     + "人还在往前走），走完才传照片",
@@ -3233,7 +3279,8 @@ public class Ledao {
                             "      ★ ③ 上传照片：缺口 %.0f m（路线 %.0f m 处接上，有效里程 %.0f m）"
                                     + "—— 现在把照片传上去（type=2）…",
                             faceGapM, faceGapEndM, validM));
-                    String mid = runFaceCheck("中途（type=2，真机 599 m 处）", "2");
+                    String mid = runFaceCheck(
+                            String.format(Locale.US, "中途（type=2，本场 %.0f m 处）", faceAtM), "2");
                     if (mid.length() > 0) {
                         faceVerifyId = mid;
                         faceResult = "中途核验 id=" + mid;
@@ -3424,8 +3471,8 @@ public class Ledao {
              *   真机同口径：21:42:18 pauseRun → 距离冻结 → 21:42:32 恢复。 */
             if (invalidM > 0.5) {
                 log.log(String.format(Locale.US,
-                        "      ★ 中段人脸三步走完：① 扫脸（%d m 处）→ ② 缺口 %.0f m"
-                                + " → ③ 上传照片（%s）", faceMiddleDistance, invalidM,
+                        "      ★ 中段人脸三步走完：① 扫脸（%.0f m 处）→ ② 缺口 %.0f m"
+                                + " → ③ 上传照片（%s）", faceAtM, invalidM,
                         faceMiddleDone ? (faceOk ? "通过" : "没通过") : "没做"));
                 log.log(String.format(Locale.US,
                         "      ★ 有效里程 %.3f km ／ 路线进度 %.3f km —— 暂停扫脸那 %.0f m 是"
