@@ -5,8 +5,8 @@
   "name": "1.0.62",
   "min": 0,
   "size": 2187710,
-  "sha256": "2894b1d86e8c8ed66527eeb5439257c3e202123b507369a1575882f6081649a9",
-  "note": "新增启动公告（5 秒后可关，带一颗「打开网站」的键）",
+  "sha256": "f0e2aff3499c6be40c5cb337524ffd13df284f6a7fd97274b0e72df8a243dd88",
+  "note": "更新了一些bug",
   "page": "https://github.com/BAB2007/yuda-run-helper",
   "ping": "",
   "urls": [
