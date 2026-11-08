@@ -1257,6 +1257,27 @@ public class MainActivity extends Activity implements Ledao.Log {
         });
         drawerPanel.addView(updBtn);
 
+        // ===== ★ v1.0.64（用户 2026-11-08）：「在检查新版本那一按钮下面加一行字和一个
+        //   直达 gitee 仓库下载页的按钮」。
+        //   背景：签名被换掉，老版本（旧签名）点「立即更新」必然
+        //   INSTALL_FAILED_UPDATE_INCOMPATIBLE —— 自动更新这条路对他们已经堵死，
+        //   所以这一行必须把"为什么装不上、该怎么装"说清楚，而不是让人对着
+        //   小米那句「更新包与已安装应用的签名不一致」发懵。
+        //   网址仍取自 DevNote.GITEE（和侧栏那四颗同源，换地址只改一处）。
+        //   上面那颗「检查新版本」原样留着：新清单的 note 里就写着"请手动下载"。
+        TextView updWarn = new TextView(this);
+        updWarn.setTextSize(11.5f);
+        updWarn.setLineSpacing(dp(2), 1f);
+        updWarn.setTextColor(Q.DANGER);
+        updWarn.setPadding(0, dp(8), 0, 0);
+        updWarn.setText("⚠ 新版换了签名：老版本点「立即更新」会报「签名不一致」装不上，"
+                + "点下面这颗按钮手动下载就行。");
+        drawerPanel.addView(updWarn);
+
+        Button giteeDl = drawerBtn("⬇️  Gitee 一键下载最新版");
+        giteeDl.setOnClickListener(v -> openRepo("Gitee 仓库下载页", DevNote.GITEE));
+        drawerPanel.addView(giteeDl);
+
         FrameLayout.LayoutParams dlp = new FrameLayout.LayoutParams(
                 drawerW, ViewGroup.LayoutParams.MATCH_PARENT);
         dlp.gravity = Gravity.START;
