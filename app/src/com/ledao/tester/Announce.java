@@ -61,8 +61,18 @@ public final class Announce {
             "今天是11-8，邯郸已经入冬，本次更新后大概率就不会再对功能进行修改了，"
                     + "如有问题或步道乐跑软件更新请及时联系煮波。";
 
-    /** 偏好键：上次弹过的 versionCode（沿用 v1.0.57 那个键名，语义相同） */
-    private static final String K_VER = "announce_ver";
+    /**
+     * 偏好键：上次弹过的 versionCode。
+     *
+     * <p>★★★ 2026-11-08 换过一次键名（{@code announce_ver} → {@code announce_ver2}），
+     *   **不是笔误，别再改回去**：
+     *   判据是「上次弹过的 versionCode &lt; 本机 versionCode」，而这一版按用户要求
+     *   **版本号退回 1.0.62（versionCode 162）**。可 1.0.63~1.0.71 那些废弃版本
+     *   早就把 {@code announce_ver} 写成了 163~171（真机上现在就是 170）——
+     *   于是 `162 < 170` 永远为假，正常人一个都看不到新公告。
+     *   换一个新键，老值等于不存在（默认 0 &lt; 162），这一版公告必定弹一次。
+     */
+    private static final String K_VER = "announce_ver2";
 
     private static volatile boolean showing = false;
 
