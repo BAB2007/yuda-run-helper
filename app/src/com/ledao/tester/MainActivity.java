@@ -398,10 +398,13 @@ public class MainActivity extends Activity implements Ledao.Log {
          *
          * ★★★ 2026-11-05（用户第 100 轮）：「更新软件，进入弹一个公告，5秒后可以进行删除…
          *   …加一个点击直接跳转的按钮」。于是 {@link Announce} **换了个内容回来**：
-         *   锁 5 秒（不是 25 秒）、正文是一句网站推广、多一颗「🌐 打开网站」的键。
+         *   锁 5 秒（不是 25 秒）。
          *   排序：先公告（这一版的事）→ 关掉之后才轮到开发者留言（长期挂着的），
          *   两个弹窗串行，不叠在一起。
-         *   只有"这一版还没弹过"才弹；弹过就记 {@code announce_ver}，重进不再弹。 */
+         *   只有"这一版还没弹过"才弹；弹过就记 {@code announce_ver}，重进不再弹。
+         * ★★★ 2026-11-08（用户）：「确认像素小游戏网站推广公告已经删除，添加新的 5s 公告」。
+         *   正文换成入冬那句；连同推广网址、「🌐 打开网站」那颗键一起删掉，只剩一颗「关闭」。
+         *   形状（5 秒锁、一版弹一次）没变，所以这里调用处一行都不用改。 */
         ui.postDelayed(() -> {
             if (isFinishing()) return;
             final Runnable afterAnnounce = () -> {
@@ -1191,6 +1194,32 @@ public class MainActivity extends Activity implements Ledao.Log {
         help.setText(HELP_TEXT);
         drawerPanel.addView(help);
 
+        // ===== ★ 2026-11-08（用户）：「软件侧边栏加入直连 gitee 和 github 仓库和作者主页的按钮」
+        //   下面那段留言正文里就写着「请在gitee(…)，github(…)进行获取」，但那是纯文字，
+        //   用户得自己抄地址；这里给四颗键，点了直接交给浏览器。
+        //   四颗键的网址**全部取自 DevNote 的常量**（GITEE / GITHUB / GITEE_HOME / GITHUB_HOME），
+        //   以后换仓库地址或换号只改那一处。
+        drawerPanel.addView(section("🔗 仓库 / 作者主页"));
+        LinearLayout repoRow1 = new LinearLayout(this);
+        repoRow1.setOrientation(LinearLayout.HORIZONTAL);
+        Button giteeRepo = drawerBtn("📦  Gitee 仓库");
+        giteeRepo.setOnClickListener(v -> openRepo("Gitee 仓库", DevNote.GITEE));
+        Button githubRepo = drawerBtn("📦  GitHub 仓库");
+        githubRepo.setOnClickListener(v -> openRepo("GitHub 仓库", DevNote.GITHUB));
+        repoRow1.addView(giteeRepo, weight());
+        repoRow1.addView(githubRepo, weight());
+        drawerPanel.addView(repoRow1);
+
+        LinearLayout repoRow2 = new LinearLayout(this);
+        repoRow2.setOrientation(LinearLayout.HORIZONTAL);
+        Button giteeHome = drawerBtn("👤  Gitee 主页");
+        giteeHome.setOnClickListener(v -> openRepo("Gitee 作者主页", DevNote.GITEE_HOME));
+        Button githubHome = drawerBtn("👤  GitHub 主页");
+        githubHome.setOnClickListener(v -> openRepo("GitHub 作者主页", DevNote.GITHUB_HOME));
+        repoRow2.addView(giteeHome, weight());
+        repoRow2.addView(githubHome, weight());
+        drawerPanel.addView(repoRow2);
+
         // ===== 开发者留言
         drawerPanel.addView(section("💬 开发者留言"));
         TextView dev = new TextView(this);
@@ -1253,6 +1282,17 @@ public class MainActivity extends Activity implements Ledao.Log {
         lp.setMargins(0, dp(5), 0, 0);
         b.setLayoutParams(lp);
         return b;
+    }
+
+    /**
+     * ★ 2026-11-08：侧栏四颗直连键（Gitee 仓库 / GitHub 仓库 / 两个作者主页）共用。
+     *
+     * <p>先记一行日志 —— 真机上到底点没点、点了哪一个，日志里一眼能对上；
+     *   再把网址交给系统浏览器（{@link Updater#openUrl}：打不开会 toast，不会点了没反应）。
+     */
+    private void openRepo(String what, String url) {
+        log("[链接] 打开" + what + "：" + url);
+        Updater.openUrl(this, url);
     }
 
     /**
@@ -5419,11 +5459,12 @@ public class MainActivity extends Activity implements Ledao.Log {
             return;
         }
         if ("announce".equals(kind)) {
-            /* ★ 2026-11-05（v1.0.62）：公告 —— 5 秒锁 + 一颗「🌐 打开网站」。
+            /* ★ 2026-11-05（v1.0.62）：公告 —— 5 秒锁。
              *   走 showForTest：**不记已读**，所以自检验完再正常启动一次，该弹还会弹。
-             *   那颗键真的会拉系统浏览器（真机验收时看得到跳转），不是假动作。 */
+             * ★ 2026-11-08：那颗「🌐 打开网站」的键跟着像素小游戏推广一起删了，
+             *   现在公告里只有一颗「关闭」，自检不再有"跳浏览器"这一步可看。 */
             Announce.showForTest(this);
-            log("[自检] 公告（" + Announce.LOCK_SEC + " 秒后可关；「🌐 打开网站」会真的跳浏览器）");
+            log("[自检] 公告（" + Announce.LOCK_SEC + " 秒后可关；" + Announce.MESSAGE + "）");
             return;
         }
         if ("face".equals(kind)) {
