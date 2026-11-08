@@ -5,7 +5,7 @@
   "name": "1.0.64",
   "min": 0,
   "size": 2191806,
-  "sha256": "3401e97b2ac60311fc68d7480f053306e656b6359d062f9baa5957cb645e36a7",
+  "sha256": "a14e6b7c3b5dde56497d32d2af454f8d3aa2f64590bae3301a8d0aba5bb57e0d",
   "note": "no~~我不小心把软件签名给删了，最新版本（1.0.64）没办法\n更自动检测更新了，为了保持版本一致性，请手机访问https://gitee.com/BAB2007/yuda-run-helper点击一键下载，下载到最新版本，或这加煮波QQ获得最新版安装包，这一版几乎就是最新版了，后面不会在进行功能上的更新",
   "page": "https://github.com/BAB2007/yuda-run-helper",
   "ping": "",
