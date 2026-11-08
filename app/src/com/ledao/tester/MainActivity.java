@@ -1270,8 +1270,8 @@ public class MainActivity extends Activity implements Ledao.Log {
         updWarn.setLineSpacing(dp(2), 1f);
         updWarn.setTextColor(Q.DANGER);
         updWarn.setPadding(0, dp(8), 0, 0);
-        updWarn.setText("⚠ 新版换了签名：老版本点「立即更新」会报「签名不一致」装不上，"
-                + "点下面这颗按钮手动下载就行。");
+        updWarn.setText("⚠ 若新版本换签名：老版本点「立即更新」会报「签名不一致」装不上，"
+                + "点下面这颗按钮手动下载即可。");
         drawerPanel.addView(updWarn);
 
         Button giteeDl = drawerBtn("⬇️  Gitee 一键下载最新版");
