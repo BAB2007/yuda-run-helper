@@ -63,6 +63,12 @@ KEYS_DIR = os.path.join(ROOT, "work", "keys")
 KS = os.path.join(KEYS_DIR, "ledao.keystore")
 KS_PASS = "ledao123"
 
+# ★★★ 签名证书指纹 —— 钉死。换钥匙 = 已装老版本的人再也覆盖安装不上。
+#   2026-10-04 一次、2026-11-07 又一次：缺 keystore 时 keytool 默默生成新钥匙，
+#   于是 1.0.62 -> 1.0.63 直接 INSTALL_FAILED_UPDATE_INCOMPATIBLE。
+#   现在两道闸：缺钥匙就退出（除非显式 --new-key）；签完指纹对不上也退出。
+CERT_SHA256 = "51af7bd2ee4046f9026c4e4b95a9983c4de15d20043aea012cfd9c3820505f7d"
+
 
 def manifest_info(app_dir):
     """从 AndroidManifest.xml 里读 versionCode / versionName —— 版本的唯一出处。"""
@@ -241,13 +247,34 @@ def build_one(a):
     ks_pass_use = a.get("ks_pass", KS_PASS)
     ks_alias = "ledaoh" if a.get("keystore") else "ledao"
     if not os.path.exists(ks_use):
+        print("""
+!! 签名密钥不见了：%s
+
+   这里绝不能自动生成新钥匙。换了钥匙，已经装了旧版的用户就再也
+   "覆盖安装"不上（INSTALL_FAILED_UPDATE_INCOMPATIBLE，只能卸载重装，
+   手机里的令牌 / 人脸 / 历史日志全没）—— 2026-10-04、2026-11-07 各踩一次。
+
+   按顺序找回来：
+     1) keys-backup/ledao-51af7bd2-*.keystore
+     2) 项目里 work/keys/ledao.keystore.bak
+     3) U 盘 / 网盘 / 另一台电脑的 work/keys/
+
+   判断是不是同一把钥匙：证书 SHA-256 必须等于
+     %s
+   （alias=ledao，口令 ledao123）
+
+   确认真找不回来、愿意让所有老用户卸载重装一次，再执行：
+     python build_apk.py --new-key
+""" % (ks_use, CERT_SHA256))
+        if "--new-key" not in sys.argv:
+            sys.exit(2)
         run(["keytool", "-genkeypair", "-v", "-keystore", ks_use,
              "-alias", ks_alias, "-keyalg", "RSA", "-keysize", "2048",
              "-validity", "10000", "-storepass", ks_pass_use,
              "-keypass", ks_pass_use,
              "-dname", "CN=%s, OU=Course, O=Lab, L=Handan, ST=Hebei, C=CN"
                        % ("Ledao Hardened" if a.get("keystore") else "Ledao Tester")],
-            "生成签名密钥")
+            "生成签名密钥（--new-key：确认换钥匙时才用）")
     print("\n签名密钥: %s（alias=%s）" % (ks_use, ks_alias))
 
     # ---- 8) 签名（输出到项目目录）
@@ -256,8 +283,18 @@ def build_one(a):
          "--v1-signing-enabled", "true", "--v2-signing-enabled", "true",
          "--out", out, aligned], "apksigner 签名")
 
-    # ---- 9) 校验
-    run([APKSIGNER, "verify", "--print-certs", out], "签名校验", check=False)
+    # ---- 9) 校验（证书指纹必须是钉死的那把，否则老用户装不上）
+    _r = run([APKSIGNER, "verify", "--print-certs", out], "签名校验", check=False)
+    _txt = (_r.stdout or "") + (_r.stderr or "")
+    _m = re.search(r"certificate SHA-256 digest:\s*([0-9a-fA-F]+)", _txt)
+    _got = _m.group(1).lower() if _m else ""
+    _want = a.get("cert", CERT_SHA256).lower()
+    if _got != _want:
+        print("\n!! 签名证书指纹不对，这个包放出去就是让用户装不上：")
+        print("   期望 %s" % _want)
+        print("   实际 %s" % (_got or "(读不出来)"))
+        sys.exit(3)
+    print("\n   证书指纹 %s ✓ 与已发布版本一致，可以覆盖安装" % _got)
     run([AAPT2, "dump", "badging", out], "APK 信息", check=False)
 
     print("\n" + "=" * 70)
