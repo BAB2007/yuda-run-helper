@@ -2,46 +2,36 @@ package com.ledao.tester;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.ActivityNotFoundException;
 import android.content.Context;
-import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
-import android.net.Uri;
 import android.os.CountDownTimer;
 import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
-import android.widget.Toast;
 
 /**
- * Announce —— 「进软件先弹一条公告，5 秒后才让关，里面有一颗打开网站的键」
- * （2026-11-05 用户要求）。
+ * Announce —— 「进软件先弹一条公告，5 秒后才让关」（2026-11-05 用户要求）。
  *
- * <p>用户原话：
- * <pre>
- *   更新软件，进入弹一个公告，5秒后可以进行删除，内容如下：
- *   发现大佬做的模拟宇达网站，给他推广一下https://exist.qd.je/pixel。
- *   加一个点击直接跳转的按钮。
- * </pre>
- *
- * <h3>和 v1.0.57 那条公告的关系（别搞混）</h3>
- * <p>v1.0.57 有过一个同名的 25 秒公告（讲水院查数据、照片必须换），
- *   v1.0.59 按用户要求**整类删除**了。这一版是**新的一条**，只借用了"公告 + 倒计时锁"
- *   这个形状，内容和行为都不一样：
- *   <ul>
- *     <li>锁 **5 秒**（不是 25 秒），到点关闭键才可点；</li>
- *     <li>正文只有一句推广（{@link #MESSAGE}，逐字照抄用户给的原文）；</li>
- *     <li>多一颗 **🌐 打开网站** 的键 —— 用户要的「点击直接跳转」。
- *         它**不受 5 秒锁限制**：想马上去看就马上去看，锁只锁"关闭"。</li>
- *   </ul>
+ * <h3>正文换过两次，别再照着旧的那段加回来</h3>
+ * <ul>
+ *   <li><b>2026-11-05（v1.0.62 第一版）</b>：用户原话「更新软件，进入弹一个公告，5秒后可以进行删除，
+ *       内容如下：发现大佬做的模拟宇达网站，给他推广一下 https://exist.qd.je/pixel。
+ *       加一个点击直接跳转的按钮。」—— 那一版正文是这句推广，另外多一颗
+ *       **🌐 打开网站** 的键（不受 5 秒锁限制，随时可点）。</li>
+ *   <li><b>2026-11-08（本版）</b>：用户「确认像素小游戏网站推广公告已经删除，添加新的 5s 公告」。
+ *       于是——<b>推广那段文字、那个网址（exist.qd.je/pixel）、那颗「打开网站」的键，全部删掉</b>；
+ *       正文换成一句入冬提醒（{@link #MESSAGE}），弹窗只剩一颗「关闭」。
+ *       留一颗键还指着那个网址，等于"广告删了、入口还在"，所以键跟着一起删。</li>
+ * </ul>
  *
  * <h3>行为</h3>
  * <ul>
+ *   <li>锁 **5 秒**（不是 v1.0.57 那条的 25 秒），到点关闭键才可点；</li>
  *   <li><b>装完第一次进</b>才弹：判据是「上次弹过的 versionCode &lt; 本机 versionCode」，
  *       同一个版本只弹一次，重进不再弹（跟 v1.0.57 那条一致）。</li>
  *   <li><b>5 秒内关不掉</b>：点屏幕外面、按返回键都不行（{@code setCancelable(false)}），
@@ -61,18 +51,15 @@ public final class Announce {
     /** 必须停留的秒数（用户指定 5 秒） */
     public static final int LOCK_SEC = 5;
 
-    /** 要推广的网址（用户原文里的链接，一字不差） */
-    public static final String SITE = "https://exist.qd.je/pixel";
-
     /**
-     * 公告正文（用户 2026-11-05 给的原文，**逐字照抄**）。
+     * 公告正文（用户 2026-11-08 给的原文，**逐字照抄**）。
      *
-     * <p>⚠ 原文里「推广一下」和网址之间**没有空格、没有标点**，这里也保持原样：
-     *   用户给的是这个写法，改标点属于"顺手改通顺"，这个项目里一律不做。
-     *   界面上就是原句一整句；跳转靠下面那颗「🌐 打开网站」的键。
+     * <p>⚠ 只做一件事：把用户给的那句话原样放进来，不增删标点、不改语序
+     *   （「今天是11-8」这种写法也照抄）。旧的那段像素小游戏推广已经按用户要求删掉了。
      */
     public static final String MESSAGE =
-            "发现大佬做的模拟宇达网站，给他推广一下" + SITE;
+            "今天是11-8，邯郸已经入冬，本次更新后大概率就不会再对功能进行修改了，"
+                    + "如有问题或步道乐跑软件更新请及时联系煮波。";
 
     /** 偏好键：上次弹过的 versionCode（沿用 v1.0.57 那个键名，语义相同） */
     private static final String K_VER = "announce_ver";
@@ -170,18 +157,11 @@ public final class Announce {
         count.setPadding(0, (int) (6 * d), 0, (int) (8 * d));
         box.addView(count);
 
-        // ---- 两颗键并排：打开网站（一直可点）/ 关闭（5 秒后才可点）
-        LinearLayout row = new LinearLayout(act);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-
-        final Button open = new Button(act);
-        open.setAllCaps(false);
-        open.setTextSize(14f);
-        open.setText("🌐  打开网站");
-        open.setTextColor(Color.WHITE);
-        open.setBackgroundColor(acc);
-        open.setOnClickListener(v -> openSite(act));
-
+        /* ---- 只有一颗「关闭」键（5 秒后才可点）
+         *   ★ 2026-11-08：原来这里是两颗并排 ——「🌐 打开网站」+「关闭」。
+         *     那颗键跳的就是像素小游戏那条推广（exist.qd.je/pixel）。推广按用户要求删了，
+         *     键必须跟着删：正文里已经没有那个网址了，再留一颗键指过去，
+         *     等于"广告删了、入口还在"。所以这里不再建 row，直接摆一颗通栏的关闭键。 */
         final Button close = new Button(act);
         close.setAllCaps(false);
         close.setTextSize(14f);
@@ -194,13 +174,8 @@ public final class Announce {
         close.setText("5 秒后可关");
 
         int bh = (int) (44 * d);
-        LinearLayout.LayoutParams l1 = new LinearLayout.LayoutParams(0, bh, 1f);
-        l1.setMargins(0, 0, (int) (8 * d), 0);
-        LinearLayout.LayoutParams l2 = new LinearLayout.LayoutParams(0, bh, 1f);
-        row.addView(open, l1);
-        row.addView(close, l2);
-        box.addView(row, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        box.addView(close, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, bh));
 
         final AlertDialog dlg = new AlertDialog.Builder(act)
                 .setView(box)
@@ -247,38 +222,10 @@ public final class Announce {
 
         try {
             dlg.show();
-            log(act, "📢 公告已弹出（" + LOCK_SEC + " 秒后可关；网址 " + SITE + "）");
+            log(act, "📢 公告已弹出（" + LOCK_SEC + " 秒后可关）");
         } catch (Throwable t) {
             showing = false;
             if (onClosed != null) onClosed.run();
-        }
-    }
-
-    /**
-     * 「点击直接跳转」：把网址交给系统浏览器。
-     *
-     * <p>三种结果都得说话：
-     * <ul>
-     *   <li>跳成功 → 日志里留一行（自检/真机验收时能对照）；</li>
-     *   <li>手机上没有能开 http 的 App（极简 ROM / 禁用了浏览器）—— 弹 toast 让用户手输，
-     *       不能点了没反应；</li>
-     *   <li>其它异常 → 同样 toast + 日志，绝不让它冒到崩溃处理器那里。</li>
-     * </ul>
-     * ★ 不在这里 {@code markSeen}：点开网站≠看完公告，关窗才是看完了。
-     */
-    private static void openSite(Activity act) {
-        try {
-            Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(SITE));
-            i.addCategory(Intent.CATEGORY_BROWSABLE);
-            act.startActivity(i);
-            log(act, "🌐 公告里的网址已交给浏览器打开：" + SITE);
-        } catch (ActivityNotFoundException e) {
-            Toast.makeText(act, "这台手机没有能打开网页的浏览器，手动输一下：" + SITE,
-                    Toast.LENGTH_LONG).show();
-            log(act, "⚠ 公告里的网址打不开（没有浏览器）：" + Err.one(e));
-        } catch (Throwable t) {
-            Toast.makeText(act, "打开失败，手动输一下：" + SITE, Toast.LENGTH_LONG).show();
-            log(act, "⚠ 公告里的网址打不开：" + Err.one(t));
         }
     }
 

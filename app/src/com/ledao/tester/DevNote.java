@@ -59,6 +59,14 @@ public final class DevNote {
      */
     public static final String GITHUB = "https://github.com/BAB2007/yuda-run-helper";
     public static final String GITEE  = "https://gitee.com/BAB2007/yuda-run-helper";
+    /**
+     * ★ 2026-11-08（用户）：「侧边栏加入直连 gitee 和 github 仓库和作者主页的按钮」。
+     *
+     * <p>仓库上面两个常量就是；作者主页是作者在两个平台的个人主页，另开两个常量放着，
+     *   侧边栏那四颗键**全部引用这里的常量** —— 以后换账号只改这一处。
+     */
+    public static final String GITHUB_HOME = "https://github.com/BAB2007";
+    public static final String GITEE_HOME  = "https://gitee.com/BAB2007";
     public static final String QQ     = "3855962053";
     public static final String EMAIL  = "3855962053@qq.com";
 
@@ -106,9 +114,14 @@ public final class DevNote {
      *        公告是"这一版"的事，留言是长期挂着的，混在一起会互相过期。
      *      ★（2026-11-03 补记）Announce 已在下一版**整类删除**（用户要求「去除公告」），
      *        留言又变回"启动时唯一的那个弹窗"；上面这段只是历史，别再照着加回来。
+     *   ⑪ 2026-11-08（本版）第 11 次：**只改第一句的前两个字** ——
+     *      用户「开发者留言中'今天是26-10-31'改为'至26-10-31'」。
+     *      原句是「今天是26-10-31，就水院查来着…」，现在是「至26-10-31，就水院查来着…」；
+     *      其余九段**一字未动**（包括那句「当前版本并非是最终版了」）。
+     *      ★ 这是**照用户原话改的**，读起来不通顺也不要顺手补成「截至目前」之类。
      */
     public static final String MESSAGE =
-            "今天是26-10-31，就水院查来着（有人举报，具体举报原因我只能说林子大了什么鸟都有），"
+            "至26-10-31，就水院查来着（有人举报，具体举报原因我只能说林子大了什么鸟都有），"
           + "其他学院的都没查，可以接着耍起，但是为了保险起见以后所有照片都要按规定上传"
           + "（我朋友帮我看了一下后台数据只有照片重复有问题，其他都没事）。"
           + "有类似问题可以联系煮波然我即时完善软件。\n\n"
