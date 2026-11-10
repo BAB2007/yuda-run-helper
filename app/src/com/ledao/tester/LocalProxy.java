@@ -38,6 +38,13 @@ public class LocalProxy {
     public interface Sink {
         /** 每抓到一次明文 HTTP 请求就回调；返回 true 表示已经拿到需要的身份，可以停了 */
         boolean onHttp(String host, String path, String body);
+        /**
+         * ★ v1.0.65：带**请求头**的版本（身份字段也可能只在头部）。
+         * 默认实现原样转给 {@link #onHttp}，所以别的调用方一行都不用改。
+         */
+        default boolean onHttp2(String host, String path, String body, String headers) {
+            return onHttp(host, path, body);
+        }
         void onLog(String s);
         /**
          * ★ 抓到 *.lptiyu.com 的**响应体**时回调（已自动解 gzip）。
@@ -134,6 +141,12 @@ public class LocalProxy {
         Sink k = sink;
         if (k == null) return false;
         try { return k.onHttp(host, path, body); } catch (Throwable t) { return false; }
+    }
+
+    private boolean http2(String host, String path, String body, String headers) {
+        Sink k = sink;
+        if (k == null) return false;
+        try { return k.onHttp2(host, path, body, headers); } catch (Throwable t) { return false; }
     }
 
     private void resp(String host, String path, String body) {
@@ -359,7 +372,7 @@ public class LocalProxy {
                 if (isTarget(host) && reqBody.length > 0) {
                     try {
                         String b = new String(reqBody, "UTF-8");
-                        if (b.length() > 0) http(host, method + " " + target, b);
+                        if (b.length() > 0) http2(host, method + " " + target, b, hdr.toString());
                     } catch (Exception ignore) { }
                 }
 
@@ -472,7 +485,7 @@ public class LocalProxy {
                 String b = new String(body, "UTF-8");
                 if (b.length() > 0 && host != null) {
                     hits.incrementAndGet();
-                    boolean done = http(host, reqLine, b);
+                    boolean done = http2(host, reqLine, b, hdr.toString());
                     if (done) {
                         // 已拿到身份：继续转发完就退出
                     }
