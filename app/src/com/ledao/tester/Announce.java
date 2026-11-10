@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.CountDownTimer;
@@ -12,6 +13,7 @@ import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 /**
@@ -48,7 +50,14 @@ public final class Announce {
 
     private Announce() { }
 
-    /** 必须停留的秒数（用户指定 5 秒） */
+    /**
+     * **默认**必须停留的秒数（用户 2026-11-08 指定 5 秒）。
+     *
+     * <p>★★★ 2026-11-11（用户「60s公告」）：从这一版起**服务端公告可以自带秒数** ——
+     *   清单里的 {@code notice_wait} 写多少就锁多少（{@link Cloud#noticeWait}），
+     *   只有它没写时才回落成这里的 5 秒。所以「5s 公告 / 60s 公告」是同一份代码，
+     *   差别只在 update.json 那一行 —— 想改回 5 秒**不用发版**。
+     */
     public static final int LOCK_SEC = 5;
 
     /**
@@ -79,6 +88,15 @@ public final class Announce {
      */
     private static final String K_VER = "announce_ver2";
 
+    /**
+     * ★★★ v1.0.65：远程公告的「看到第几号了」。
+     *
+     * <p>为什么不复用 {@link #K_VER}：远程公告的判据是作者在 {@code update.json} 里
+     *   递增的 {@code notice_id}，跟版本号没关系 —— 同一版（1.0.65）可以先后发三条
+     *   公告，用 versionCode 判就永远只弹第一条。
+     */
+    private static final String K_NID = "announce_nid";
+
     private static volatile boolean showing = false;
 
     private static SharedPreferences sp(Context c) {
@@ -91,16 +109,68 @@ public final class Announce {
      * <p>读不到 versionCode（{@link Cloud#myVer} 返回 0）时返回 false ——
      * 那种情况下如果还弹，就等于**每次启动都弹**，比不弹糟得多。
      */
+    /**
+     * ★★★ v1.0.65：内置公告（{@link #MESSAGE}）的开关，这一版起是 <b>false</b>。
+     *
+     * <p>为什么关掉：内置公告的判据是 versionCode，每出一版就必然重弹一次 ——
+     *   用户 1.0.65 装完会再看到一遍 1.0.64 那条「入冬 / 多多推广」，跟这一版要说的
+     *   事（修提取卡住 + 上服务端公告）完全对不上。这一版要说的那句话，走
+     *   {@code update.json} 的 {@code notice}，**不用发版**就能替换 —— 那才是正路。
+     *
+     * <p>以后要是又想临时在 APK 里硬写一条，把它改回 true 即可。
+     */
+    private static final boolean BUILTIN_ON = false;
+
     public static boolean shouldShow(Context c) {
         if (c == null) return false;
+        if (pendingRemote(c) != null) return true;
+        if (!BUILTIN_ON) return false;
         int v = Cloud.myVer(c);
         return v > 0 && sp(c).getInt(K_VER, 0) < v;
     }
 
+    /**
+     * ★ v1.0.65：清单里有没有一条**没看过**的远程公告。
+     *
+     * <p>读的是 {@link Cloud#cached}（落盘的清单），所以：作者改完 {@code update.json}，
+     *   用户下一次打开软件，即使 ver 没变、一个字都不用更新，这条公告也会弹出来。
+     *
+     * @return 有就返回正文；没有公告 / 已经看过 / 清单没拉到 → null
+     */
+    public static String pendingRemote(Context c) {
+        if (c == null) return null;
+        int nid = Cloud.noticeId(c);
+        if (nid <= 0) return null;
+        if (sp(c).getInt(K_NID, 0) >= nid) return null;
+        String txt = Cloud.noticeText(c);
+        return txt.length() == 0 ? null : txt;
+    }
+
+    /**
+     * ★ v1.0.65：清单**刚拉回来**时调一次 —— 有新公告就当场弹。
+     *
+     * <p>为什么需要它：启动流程里公告是 700 ms 弹的，那时清单还没拉（3 秒后才拉）；
+     *   所以"作者刚发的那一条"要靠这次补弹，否则用户得关掉重开才看得见。
+     *
+     * @return 真弹了才 true
+     */
+    public static boolean showIfPending(Activity act) {
+        if (act == null || act.isFinishing() || showing) return false;
+        if (pendingRemote(act) == null) return false;
+        show(act, null, true);
+        return true;
+    }
+
     /** 记下"这一版的公告已经看过了" */
-    private static void markSeen(Context c) {
+    private static void markSeen(Context c, boolean remote) {
         int v = Cloud.myVer(c);
-        if (v > 0) sp(c).edit().putInt(K_VER, v).apply();
+        int nid = Cloud.noticeId(c);
+        android.content.SharedPreferences.Editor e = sp(c).edit();
+        /* 弹的是远程公告时，把"这一版的公告"也一并记掉：
+         * 否则用户下次进来，编译进去的那条又补弹一次 —— 一次启动弹两条公告。 */
+        if (v > 0) e.putInt(K_VER, v);
+        if (remote && nid > 0) e.putInt(K_NID, nid);
+        e.apply();
     }
 
     /**
@@ -123,6 +193,28 @@ public final class Announce {
         if (showing) return;
         showing = true;
 
+        /* ★ v1.0.65：优先弹**远程公告**（update.json 的 notice/notice_id），
+         *   没有才回落到编译进 APK 的 {@link #MESSAGE}。
+         *   这条优先级就是"不更新也能推公告"的全部实现。 */
+        final String remoteTxt = pendingRemote(act);
+        final boolean remote = remoteTxt != null;
+        /* 内置公告关掉以后，真实弹出只认服务端那一条。
+         * mark=false 是自检入口（--es selftest announce），它不看开关，
+         * 否则验的人连公告长什么样都看不到。 */
+        if (!remote && !BUILTIN_ON && mark) {
+            showing = false;   // ★ 退出前必须复位，否则这个进程里再也弹不出公告
+            return;
+        }
+
+        /* ★ v1.0.65：这一条到底锁几秒 —— 服务端公告先看清单里的 notice_wait，
+         *   没写才用默认 5 秒。上限压到 10 分钟：清单写错一个 0 也不至于关不掉。 */
+        int lock = LOCK_SEC;
+        if (remote) {
+            int w = Cloud.noticeWait(act);
+            if (w > 0) lock = Math.min(w, 600);
+        }
+        final int lockSec = lock;
+
         final int bg = AppPrefs.bg(act), fg = AppPrefs.fg(act), acc = AppPrefs.accent(act);
         final int card = (AppPrefs.card(bg) & 0x00FFFFFF) | 0xFF000000;   // 不透明，跟留言窗一致
         final float d = act.getResources().getDisplayMetrics().density;
@@ -144,10 +236,12 @@ public final class Announce {
         box.addView(title);
 
         TextView ver = new TextView(act);
+        /* ★ v1.0.65：服务端公告不打版本号 —— 它跟"哪一版"无关，是临时要说的那句话。 */
         try {
-            ver.setText(act.getString(R.string.app_version) + " · 5 秒后可关闭");
+            ver.setText(remote ? ("📡 服务端公告 · " + lockSec + " 秒后可关闭")
+                    : (act.getString(R.string.app_version) + " · " + lockSec + " 秒后可关闭"));
         } catch (Throwable t) {
-            ver.setText("5 秒后可关闭");
+            ver.setText(lockSec + " 秒后可关闭");
         }
         ver.setTextSize(12f);
         ver.setTextColor(AppPrefs.alpha(fg, 0.75f));
@@ -157,13 +251,44 @@ public final class Announce {
         // ---- 正文（用户原句，逐字；网址就在这句里，不再单列一行）
         //   ★ 第一版曾经把网址再单列一行（带下划线、可点）—— 真机上一条网址出现两次，
         //     看着像 bug。用户要的只是"一颗点了能跳的键"，所以跳转只留那颗键。
+        LinearLayout bodyBox = new LinearLayout(act);
+        bodyBox.setOrientation(LinearLayout.VERTICAL);
+
+        /* ★★★ v1.0.65（用户 2026-11-11「<=这行话标红」）：清单里 notice_red 那行
+         *   单独渲染成红字加粗摆在正文最上面。不红的话它就是一行普通提示，
+         *   而这句话（"上传人脸一定要按规则上传，任何事都有风险，我只能降低风险"）
+         *   正是这一条公告里唯一要求用户必须看见的。 */
+        final String red = remote ? Cloud.noticeRed(act) : "";
+        if (red.length() > 0) {
+            TextView warn = new TextView(act);
+            warn.setText(red);
+            warn.setTextSize(14.5f);
+            warn.setTextColor(Color.parseColor("#C62828"));
+            warn.setTypeface(Typeface.DEFAULT_BOLD);
+            warn.setLineSpacing(4 * d, 1.18f);
+            warn.setPadding(0, 0, 0, (int) (8 * d));
+            bodyBox.addView(warn);
+        }
+
         TextView body = new TextView(act);
-        body.setText(MESSAGE);
+        body.setText(remote ? remoteTxt : MESSAGE);
         body.setTextSize(14f);
         body.setTextColor(fg);
         body.setLineSpacing(4 * d, 1.18f);
         body.setPadding(0, 0, 0, (int) (4 * d));
-        box.addView(body);
+        bodyBox.addView(body);
+
+        /* ★ v1.0.65：这条公告 500 多字，1080×2248 一屏根本放不下 —— 正文进 ScrollView。
+         *   短公告（≤ 240 字）按内容高度走，不留白；长公告固定占 52% 屏高，
+         *   倒计时和「关闭」键永远露在屏幕里（小屏 720×1280 也算过）。 */
+        ScrollView sc = new ScrollView(act);
+        sc.addView(bodyBox);
+        int chars = red.length() + (remote ? remoteTxt.length() : MESSAGE.length());
+        int scH = chars > 240
+                ? (int) (act.getResources().getDisplayMetrics().heightPixels * 0.52)
+                : ViewGroup.LayoutParams.WRAP_CONTENT;
+        box.addView(sc, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, scH));
 
         // ---- 倒计时提示
         final TextView count = new TextView(act);
@@ -186,7 +311,7 @@ public final class Announce {
         close.setBackgroundColor(AppPrefs.alpha(fg, 0.14f));
         close.setEnabled(false);
         close.setAlpha(0.55f);
-        close.setText("5 秒后可关");
+        close.setText(lockSec + " 秒后可关");
 
         int bh = (int) (44 * d);
         box.addView(close, new LinearLayout.LayoutParams(
@@ -204,20 +329,21 @@ public final class Announce {
 
         final Runnable dismissNow = () -> {
             try { if (timerRef[0] != null) timerRef[0].cancel(); } catch (Throwable ignore) { }
-            if (mark) markSeen(act);
+            if (mark) markSeen(act, remote);
             showing = false;
             try { dlg.dismiss(); } catch (Throwable ignore) { }
             if (onClosed != null) onClosed.run();
         };
 
-        timerRef[0] = new CountDownTimer(LOCK_SEC * 1000L, 1000L) {
+        timerRef[0] = new CountDownTimer(lockSec * 1000L, 1000L) {
             @Override public void onTick(long ms) {
                 int left = (int) Math.ceil(ms / 1000.0);
                 count.setText("⏳ 请看完这遍公告：" + left + " 秒后才能关闭");
                 close.setText(left + " 秒后可关");
             }
             @Override public void onFinish() {
-                count.setText("✔ 已可关闭。这条公告只在本版本第一次进来时弹一次。");
+                count.setText(remote ? "✔ 已可关闭。这条公告只弹这一次，关掉不会再出现。"
+                        : "✔ 已可关闭。这条公告只在本版本第一次进来时弹一次。");
                 count.setTextColor(Color.parseColor("#1B7A4B"));
                 close.setEnabled(true);
                 close.setAlpha(1f);
@@ -231,13 +357,14 @@ public final class Announce {
          * 否则这个进程里再也弹不出来了。 */
         dlg.setOnDismissListener(dlg2 -> {
             try { if (timerRef[0] != null) timerRef[0].cancel(); } catch (Throwable ignore) { }
-            if (mark) markSeen(act);
+            if (mark) markSeen(act, remote);
             showing = false;
         });
 
         try {
             dlg.show();
-            log(act, "📢 公告已弹出（" + LOCK_SEC + " 秒后可关）");
+            log(act, "📢 公告已弹出（" + (remote ? "服务端第 " + Cloud.noticeId(act) + " 号"
+                    : "内置") + "，" + lockSec + " 秒后可关）");
         } catch (Throwable t) {
             showing = false;
             if (onClosed != null) onClosed.run();

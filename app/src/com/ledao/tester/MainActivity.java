@@ -88,7 +88,12 @@ public class MainActivity extends Activity implements Ledao.Log {
     private static final long FACE_MAX_BYTES = 8L * 1024 * 1024;
     private static final int REQ_PICK_AVATAR = 8805;  // ★ #8：水滴定位图标里的头像
     /** 自动打开步道乐跑后停留多久（毫秒）——够它把 User/User + RefreshToken 发完 */
-    private static final long LEDAO_DWELL_MS = 8000;
+    /* ★★★ v1.0.65（用户 2026-11-10「步道乐跑添加广告了，导致提取信息的时候会卡在这两个界面」）：
+     *   8 秒 → 22 秒。
+     *   步道乐跑这一版开屏有广告，从冷启动到真正发出登录/续期接口要十几秒；8 秒的窗口里
+     *   它还在放广告，助手已经把界面切回来了 —— 于是一条请求都抓不到，界面就永久停在
+     *   「⏳ 抓包中 —— 等步道乐跑的请求」。这里只加长停留，不动控制流。 */
+    private static final long LEDAO_DWELL_MS = 22000;
 
     /** 所有「卡片」容器 —— 换主题时统一刷背景 */
     private final List<View> cards = new ArrayList<>();
@@ -1257,6 +1262,27 @@ public class MainActivity extends Activity implements Ledao.Log {
         });
         drawerPanel.addView(updBtn);
 
+        // ===== ★ v1.0.64（用户 2026-11-08）：「在检查新版本那一按钮下面加一行字和一个
+        //   直达 gitee 仓库下载页的按钮」。
+        //   背景：签名被换掉，老版本（旧签名）点「立即更新」必然
+        //   INSTALL_FAILED_UPDATE_INCOMPATIBLE —— 自动更新这条路对他们已经堵死，
+        //   所以这一行必须把"为什么装不上、该怎么装"说清楚，而不是让人对着
+        //   小米那句「更新包与已安装应用的签名不一致」发懵。
+        //   网址仍取自 DevNote.GITEE（和侧栏那四颗同源，换地址只改一处）。
+        //   上面那颗「检查新版本」原样留着：新清单的 note 里就写着"请手动下载"。
+        TextView updWarn = new TextView(this);
+        updWarn.setTextSize(11.5f);
+        updWarn.setLineSpacing(dp(2), 1f);
+        updWarn.setTextColor(Q.DANGER);
+        updWarn.setPadding(0, dp(8), 0, 0);
+        updWarn.setText("⚠ 若新版本换签名：老版本点「立即更新」会报「签名不一致」装不上，"
+                + "点下面这颗按钮手动下载即可。");
+        drawerPanel.addView(updWarn);
+
+        Button giteeDl = drawerBtn("⬇️  Gitee 一键下载最新版");
+        giteeDl.setOnClickListener(v -> openRepo("Gitee 仓库下载页", DevNote.GITEE));
+        drawerPanel.addView(giteeDl);
+
         FrameLayout.LayoutParams dlp = new FrameLayout.LayoutParams(
                 drawerW, ViewGroup.LayoutParams.MATCH_PARENT);
         dlp.gravity = Gravity.START;
@@ -2190,12 +2216,20 @@ public class MainActivity extends Activity implements Ledao.Log {
         sb.append("【1】两张必须不一样\n");
         sb.append("· 跑前、跑中要各传一张不同的照片；\n");
         sb.append("· 两张一样 = 同一次拍摄被用了两遍，人工审查最容易看出来的就是这里。\n\n");
-        sb.append("【2】一定要在户外\n");
+        /* ★★★ v1.0.65（用户 2026-11-11）：「点击人脸照片之后规则当中【1】【2】之间加一条，
+         *   人脸照片的背景一定要换，不要一次性一个地方拍一堆照片屯着用」。
+         *   插在【1】和原【2】之间，原【2】/【3】顺延成【3】/【4】。 */
+        sb.append("【2】背景一定要换\n");
+        sb.append("· 背景一定要换，不要一次性一个地方拍一堆照片屯着用；\n");
+        sb.append("· 每张都得现拍：门口、树下、路边、操场 —— 背景里有没有楼、树、路沿，"
+                + "人工（AI 辅助）审查把两张摆一起就看得出来是同一个地方；\n");
+        sb.append("· 跑前那张和跑中那张，背景**不能是同一处**，也不能是同一扇窗/同一面墙。\n\n");
+        sb.append("【3】一定要在户外\n");
         sb.append("· 跑步数据会有人工审查，而且传上去的是整张照片："
                 + "室内白墙 / 床单 / 天花板 和「在校园里跑步」对不上，直接不通过；\n");
         sb.append("· 就去操场、路边、树下拍 —— 画面里要能看见天空 / 楼 / 树 / 跑道；\n");
         sb.append("· 光线要足、脸占满画面，别戴帽子墨镜、别用重美颜。\n\n");
-        sb.append("【3】只在本场用一次\n");
+        sb.append("【4】只在本场用一次\n");
         sb.append("· 这一场跑完，两张照片就从「待上传」里删掉了；\n");
         /* ★ v1.0.60（用户第 1 条「留存照片」）：以前这里写的是"两张都会自动删除"，
          *   现在留存库会留一份副本 —— 话得跟着改，不能让用户以为删干净了。 */
@@ -2203,7 +2237,17 @@ public class MainActivity extends Activity implements Ledao.Log {
           .append(" 天、只用来查重（同一张 10 天内再传会被拦下），不上传、过期自动删；\n");
         sb.append("· 下一场要重新传两张新的（换来换去才像真人每次现拍）。\n");
         tips.setText(sb.toString());
-        box.addView(tips);
+        /* ★★★ v1.0.65（用户 2026-11-11 加【2】背景那条之后）：规则从 3 条变 4 条，
+         *   1080×2248 真机上一整段就顶满一屏 —— 下面那行
+         *   「现在：跑前这张 已设置（x KB）／⚠ 两张现在是同一张照片 —— 必须换掉其中一张」
+         *   直接被挤出屏幕（patch/v165-face-rules.png 实拍）。那行是功能性提示，不能丢：
+         *   两张一样就得换，用户在**点之前**得看见。所以规则进 ScrollView、固定占 60% 屏高，
+         *   状态行和下面三颗键永远露着。 */
+        ScrollView sc = new ScrollView(this);
+        sc.addView(tips);
+        int scH = (int) (getResources().getDisplayMetrics().heightPixels * 0.60);
+        box.addView(sc, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, scH));
 
         TextView st = new TextView(this);
         st.setTextSize(12f);
@@ -3846,13 +3890,12 @@ public class MainActivity extends Activity implements Ledao.Log {
             updateSniffBtn();
             setStatus("⏳ 抓包中 —— 等步道乐跑的请求");
             log("   代理就绪：127.0.0.1:" + LocalProxy.PORT);
-            // 90 秒还没拿到续期令牌，就先用手上的 uid+token 收工
-            ui.postDelayed(() -> {
-                if (LocalProxy.listening() && sniffHits > 0 && !sniffKv.containsKey("refresh_token")) {
-                    log("⏱ 已等 90 秒仍没拿到续期令牌，先用现有 uid+token 收工。");
-                    onIdentityReady("超时，只有 uid+token");
-                }
-            }, 90000);
+            /* ★★★ v1.0.65：原来这里是一条 90 秒定时器，可它只在**已经抓到过一条**
+             *   （sniffHits > 0）时才起作用 —— 一条都没抓到时它什么也不做，界面上就
+             *   永久停在「⏳ 抓包中 —— 等步道乐跑的请求」。用户报的"卡在这两个界面"
+             *   正是这两种情形（一条没抓到 / 抓到但续期令牌不来）。
+             *   现在换成看门狗：会重开、会说话、最后一定会收工。 */
+            armSniffWatchdog();
             return true;
         } catch (Throwable t) {
             log("!! 本地代理启动失败：" + t.getMessage());
@@ -3865,11 +3908,147 @@ public class MainActivity extends Activity implements Ledao.Log {
         }
     }
 
+    // ==================================================================
+    //  ★★★ v1.0.65（用户 2026-11-10：「步道乐跑添加广告了，导致提取信息的时候会卡在
+    //  这两个界面，修一下bug」）—— 抓包看门狗
+    //
+    //  两个症状、两个成因，一起治：
+    //   ① 「⏳ 抓包中 —— 等步道乐跑的请求」永久不动
+    //      · 步道乐跑这版开屏有广告，冷启动到真正发出登录/续期接口要十几秒，
+    //        助手只停留 8 秒就把界面切回来了 —— 一条都没赶上；
+    //      · 更要紧的是：它要是在后台活着，`startActivity` 只是把它切到前台，
+    //        **一个请求都不发**，抓包里当然一条都没有。
+    //      → 停留改 22 秒（LEDAO_DWELL_MS），每次重开前先 killBackgroundProcesses
+    //        强制冷启动；仍抓不到就再重开，最多两轮，最后给一句能照做的话。
+    //   ② 「⏳ 已拿到 token，再等 refresh_token…」久等
+    //      续期令牌只在**重新登录**时下发，日常冷启动根本不发。原来干等 90 秒。
+    //      → 抓到 uid+token 之后 20 秒还没续期令牌就收工（本轮只能跑一次，日志说清楚）。
+    // ==================================================================
+
+    /** 已经自动重开过几次步道乐跑（最多 2 次） */
+    private int sniffRound = 0;
+    /** 第一次抓到 uid+token 的时刻（0 = 还没抓到） */
+    private long sniffFirstHitMs = 0;
+    /** 正文解不开的条数（新加密通道的报警器，见 onSniffed） */
+    private int sniffDecryptFail = 0;
+
+    private void armSniffWatchdog() {
+        sniffRound = 0;
+        sniffFirstHitMs = 0;
+        sniffDecryptFail = 0;
+        sniffHits = 0;
+        /* 第一轮停留结束时才判 —— 免得用户还在看开屏广告的时候就被拽回来 */
+        ui.postDelayed(this::sniffTick, LEDAO_DWELL_MS + 2000);
+    }
+
+    private void sniffTick() {
+        if (!LocalProxy.listening()) return;
+
+        if (sniffHits == 0) {
+            if (sniffRound < 2) {
+                sniffRound++;
+                log("⏱ 一轮停留结束还是 0 条 —— 开屏广告大概把首屏接口挡在后面了，"
+                        + "冷启动一次步道乐跑（第 " + sniffRound + " 次重试）");
+                setStatus("⏳ 抓包中 · 0 条，正在第 " + sniffRound + " 次重开步道乐跑…");
+                reopenLedao();
+                ui.postDelayed(this::sniffTick, LEDAO_DWELL_MS + 2000);
+                return;
+            }
+            log("❌ 重试两轮仍然一条都没抓到。请手动打开步道乐跑，点一下「我的」页签");
+            log("   （那一下会让它带着 uid+token 重新请求一次），再切回助手 —— 代理还开着。");
+            setStatus("❌ 没抓到 —— 手动进步道乐跑点「我的」，再切回来");
+            ui.postDelayed(this::sniffTick, 30000);
+            return;
+        }
+
+        boolean hasRt;
+        synchronized (sniffKv) { hasRt = sniffKv.containsKey("refresh_token"); }
+        if (hasRt) return;                 // 收工逻辑已经由 onSniffed / onSniffedResp 接管
+
+        if (sniffFirstHitMs == 0) sniffFirstHitMs = System.currentTimeMillis();
+        long waited = System.currentTimeMillis() - sniffFirstHitMs;
+        if (waited >= 20000) {
+            log("⏱ 抓到 uid+token 已经 " + (waited / 1000) + " 秒，续期令牌没来"
+                    + "（日常冷启动本来就不下发）—— 先用它收工，这一轮只能跑一次。");
+            onIdentityReady("只拿到 uid+token（没有续期令牌）");
+            return;
+        }
+        LocalProxy p = LocalProxy.current();
+        log("⏳ 代理活着：已见 " + sniffHits + " 条身份请求 / 通道总计 "
+                + (p == null ? 0 : p.getHits()) + " 条，继续等续期令牌…");
+        ui.postDelayed(this::sniffTick, 5000);
+    }
+
+    /** 把步道乐跑拉起来（不自动切回）。先结束它的进程 —— 只有冷启动才会真的发请求。 */
+    private boolean reopenLedao() {
+        killLedaoApp("冷启动一次，保证它把登录/续期接口发出来");
+        android.content.Intent li;
+        try {
+            li = getPackageManager().getLaunchIntentForPackage(PKG_LEDAO);
+        } catch (Throwable t) { li = null; }
+        if (li == null) {
+            log("!! 手机上没找到步道乐跑 —— 请手动打开它");
+            return false;
+        }
+        try {
+            li.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(li);
+            return true;
+        } catch (Throwable t) {
+            log("!! 打开步道乐跑失败：" + t + " —— 请手动打开");
+            return false;
+        }
+    }
+
+    /**
+     * ★ v1.0.65：从请求头里抠身份。
+     *
+     * <p>以前只认**正文**里的 uid/token。步道乐跑这版把一部分字段挪到了头部
+     * （{@code token} / {@code Authorization: Bearer …} / {@code Cookie}），
+     * 只认正文等于"请求明明抓到了，却永远算没抓到"。
+     */
+    private static java.util.Map<String, String> parseHeaders(String raw) {
+        java.util.TreeMap<String, String> m = new java.util.TreeMap<>();
+        if (raw == null || raw.length() == 0) return m;
+        for (String line : raw.split("\r?\n")) {
+            int i = line.indexOf(':');
+            if (i <= 0) continue;
+            String k = line.substring(0, i).trim().toLowerCase(java.util.Locale.US);
+            String v = line.substring(i + 1).trim();
+            if (v.length() == 0) continue;
+            if (k.equals("authorization") || k.equals("token") || k.equals("access-token")
+                    || k.equals("access_token") || k.equals("x-token") || k.equals("x-access-token")) {
+                if (v.regionMatches(true, 0, "bearer ", 0, 7)) v = v.substring(7).trim();
+                if (v.length() >= 16) m.put("token", v);
+            } else if (k.equals("uid") || k.equals("user-id") || k.equals("userid")
+                    || k.equals("x-uid")) {
+                if (v.matches("[0-9]{2,}")) m.put("uid", v);
+            } else if (k.equals("cookie")) {
+                for (String seg : v.split(";")) {
+                    int j = seg.indexOf('=');
+                    if (j <= 0) continue;
+                    String ck = seg.substring(0, j).trim().toLowerCase(java.util.Locale.US);
+                    String cv = seg.substring(j + 1).trim();
+                    if (ck.equals("uid") && cv.matches("[0-9]{2,}")) m.put("uid", cv);
+                    if ((ck.equals("token") || ck.equals("access_token")) && cv.length() >= 16)
+                        m.put("token", cv);
+                }
+            }
+        }
+        return m;
+    }
+
     private LocalProxy.Sink mkSink() {
         return new LocalProxy.Sink() {
             @Override
             public boolean onHttp(String host, String path, String body) {
                 return onSniffed(host, path, body);
+            }
+
+            /** ★ v1.0.65：带请求头的那条 —— 身份也可能只在头部 */
+            @Override
+            public boolean onHttp2(String host, String path, String body, String headers) {
+                return onSniffed(host, path, body, parseHeaders(headers));
             }
 
             @Override
@@ -3893,22 +4072,11 @@ public class MainActivity extends Activity implements Ledao.Log {
         //   自动打开步道乐跑停 8 秒，让它把登录/令牌请求发出来，然后自动切回。
         ui.postDelayed(() -> {
             if (!LocalProxy.listening()) return;
-            android.content.Intent li;
-            try {
-                li = getPackageManager().getLaunchIntentForPackage(PKG_LEDAO);
-            } catch (Throwable t) { li = null; }
-            if (li == null) {
-                log("!! 手机上没找到步道乐跑 —— 请手动打开它");
-                return;
-            }
-            log("→ 自动打开步道乐跑，停留 " + (LEDAO_DWELL_MS / 1000) + " 秒…");
-            try {
-                li.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivity(li);
-            } catch (Throwable t) {
-                log("!! 打开步道乐跑失败：" + t + " —— 请手动打开");
-                return;
-            }
+            log("→ 自动打开步道乐跑，停留 " + (LEDAO_DWELL_MS / 1000) + " 秒…"
+                    + "（开屏广告要滑掉就滑掉它）");
+            /* ★ v1.0.65：先结束它的进程再拉起。它要是在后台活着，"打开"只是把它切到
+             *   前台 —— 一个请求都不发，这正是"抓包里一条都看不到"的成因之一。 */
+            if (!reopenLedao()) return;
             ui.postDelayed(() -> {
                 log("→ 自动切回助手");
                 try {
@@ -4033,13 +4201,32 @@ public class MainActivity extends Activity implements Ledao.Log {
     //  抓到的请求 / 响应
     // ==================================================================
     private boolean onSniffed(String host, String path, String body) {
+        return onSniffed(host, path, body, null);
+    }
+
+    /** ★ v1.0.65：多带一份头部 —— 身份也可能写在头部（见 parseHeaders） */
+    private boolean onSniffed(String host, String path, String body,
+                              java.util.Map<String, String> hdrKv) {
         String plain = body;
         if (body != null && body.startsWith("key=")) {
             plain = decryptAny(body.substring(4));
-            if (plain == null) plain = "(解密失败) " + body.substring(0, 200);
+            if (plain == null) {
+                /* ★★★ v1.0.65：解不开就别再"静默跳过"。
+                 *   步道乐跑这次（加广告那版）多了一组只给广告接口用的加密通道，
+                 *   我们手上那几组 key 有对不上的 —— 以前的表现是"什么也没抓到"，
+                 *   现在至少让日志说出"这东西我解不开"。只报前 3 条，免得刷屏。 */
+                sniffDecryptFail++;
+                if (sniffDecryptFail <= 3) {
+                    log("  [加密] 有一条正文解不开（" + path + "）—— 可能是新加的加密通道，已跳过");
+                }
+                plain = "(解密失败) " + (body.length() > 200 ? body.substring(0, 200) : body);
+            }
         }
         if (recordMode) appendCapture(host, path, plain);
-        if (plain == null || plain.indexOf("uid") < 0) return false;
+        /* ★ v1.0.65：原来第一道闸是 `plain.indexOf("uid") < 0` 就直接 return ——
+         *   那是"正文里必须有 uid 字样"的粗暴判断，请求一旦把 uid 放进头部就等于全丢。
+         *   现在不在正文上卡，改到后面按字段判断（kv 里必须同时有 uid + token）。 */
+        if (plain == null || plain.length() == 0) return false;
 
         TreeMap<String, String> kv = new TreeMap<>();
         try {
@@ -4058,6 +4245,11 @@ public class MainActivity extends Activity implements Ledao.Log {
                 int i = seg.indexOf('=');
                 if (i > 0) kv.put(seg.substring(0, i).trim(), seg.substring(i + 1).trim());
             }
+        }
+        // ★ v1.0.65：正文里没有的，用头部补（头部值优先级更低，不覆盖正文）
+        if (hdrKv != null) {
+            for (java.util.Map.Entry<String, String> e : hdrKv.entrySet())
+                if (!kv.containsKey(e.getKey())) kv.put(e.getKey(), e.getValue());
         }
         if (!kv.containsKey("uid") || !kv.containsKey("token")) return false;
 
@@ -4112,7 +4304,15 @@ public class MainActivity extends Activity implements Ledao.Log {
 
     /** 响应体里的新令牌（Login/RefreshToken 的新令牌只在响应里） */
     private void onSniffedResp(String host, String path, String body) {
-        if (body == null || body.length() < 8 || body.charAt(0) != '{') return;
+        if (body == null || body.length() < 8) return;
+        /* ★ v1.0.65：响应也可能是 `key=` 密文（加广告那版起有几条接口这么回）。
+         *   先解一次，解开就按 JSON 继续；解不开就还是老样子跳过。 */
+        if (body.charAt(0) != '{') {
+            if (!body.startsWith("key=")) return;
+            String p = decryptAny(body.substring(4));
+            if (p == null || p.length() < 8 || p.charAt(0) != '{') return;
+            body = p;
+        }
         try {
             JSONObject o = new JSONObject(body);
             Ledao.decryptResponse(o);
@@ -4179,7 +4379,11 @@ public class MainActivity extends Activity implements Ledao.Log {
                 ui.postDelayed(this::startRun, 900);
             }, 900);
         } else {
-            stopSniff("已拿到完整身份");
+            /* ★ v1.0.65：这里原来不管三七二十一都写「已拿到完整身份」，而看门狗收工时
+             *   明明只有 uid+token —— 日志要说实话。 */
+            boolean rt;
+            synchronized (sniffKv) { rt = sniffKv.containsKey("refresh_token"); }
+            stopSniff(rt ? "已拿到完整身份" : "只有 uid+token（没有续期令牌）");
         }
     }
 

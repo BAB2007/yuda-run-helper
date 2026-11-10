@@ -115,12 +115,31 @@ public final class Cloud {
         public String name = "";        // "1.0.47"
         public String sha = "";         // APK 的 sha256（小写十六进制，可空）
         public String note = "";        // 一句话更新内容
+        /* ★★★ v1.0.65（用户 2026-11-10「添加不更新即可弹出公告的功能」）：
+         *   `notice` 是那条公告的正文，`notice_id` 是它的编号。
+         *   为什么要编号：公告要"只弹一次"，判据不能再靠 versionCode ——
+         *   同一版（比如 1.0.65）可以先后发好几条公告，用版本号判就永远只弹第一条。
+         *   编号由作者在清单里**递增**，客户端只记住"看到第几号"。 */
+        public String notice = "";      // 远程公告正文（空 = 这条不弹）
+        public int nid = 0;             // 公告编号（0 = 没有公告）
+        /* ★★★ v1.0.65（用户 2026-11-11「60s公告」）：这条公告要锁多少秒才让关。
+         *   0 / 缺字段 = 用 Announce.LOCK_SEC 的默认 5 秒（老清单照样能用）。 */
+        public int nwait = 0;
+        /* ★ 用户原话「<=这行话标红」：公告里**单独一行**要标红的提示语。
+         *   单独开一个字段而不是在正文里埋标记 —— 否则以后改文案的人
+         *   一不留神就会把「<=这行话标红」这种批注也当成正文发出去。 */
+        public String nred = "";
         public String page = "";        // 「去仓库看」打开的地址
         public String ping = "";        // 心跳端点；空 = 作者还没部署
         public final List<String> urls = new ArrayList<>();
 
         public boolean ok() {
-            return ver > 0 && !urls.isEmpty();
+            if (ver > 0 && !urls.isEmpty()) return true;
+            /* ★ v1.0.65：**只有公告、没有新版**也是合法清单 ——
+             *   这是"不更新也能推公告"的全部前提：清单里 ver 保持当前版本、
+             *   只把 notice_id 递增。老客户端（1.0.64 及以前）解析完
+             *   因为 ver 没变，一律当成"没有更新"忽略掉，一点副作用都没有。 */
+            return nid > 0 && notice.trim().length() > 0;
         }
 
         /** 写回缓存用（和 {@link #parse} 读的字段一一对应）。 */
@@ -135,6 +154,10 @@ public final class Cloud {
                 o.put("note", note);
                 o.put("page", page);
                 o.put("ping", ping);
+                o.put("notice", notice);
+                o.put("notice_id", nid);
+                o.put("notice_wait", nwait);
+                o.put("notice_red", nred);
                 JSONArray a = new JSONArray();
                 for (String u : urls) a.put(u);
                 o.put("urls", a);
@@ -162,6 +185,10 @@ public final class Cloud {
             m.note = o.optString("note", "");
             m.page = o.optString("page", "");
             m.ping = o.optString("ping", "");
+            m.notice = o.optString("notice", "");
+            m.nid = o.optInt("notice_id", 0);
+            m.nwait = o.optInt("notice_wait", 0);
+            m.nred = o.optString("notice_red", "");
             JSONArray a = o.optJSONArray("urls");
             if (a != null) {
                 for (int i = 0; i < a.length(); i++) {
@@ -316,6 +343,38 @@ public final class Cloud {
     /** 上一次成功拉到的清单（没有就返回 null）。 */
     public static M cached(Context c) {
         return parse(sp(c).getString(K_CACHE, ""));
+    }
+
+    /**
+     * ★ v1.0.65：缓存清单里的公告正文（没有就空串）。
+     * 读的是**落盘的缓存**，所以没网也照样能把作者上次发的公告弹出来。
+     */
+    public static String noticeText(Context c) {
+        M m = cached(c);
+        if (m == null || m.notice == null) return "";
+        return m.notice.trim();
+    }
+
+    /** ★ v1.0.65：缓存清单里的公告编号（0 = 没有公告）。 */
+    public static int noticeId(Context c) {
+        M m = cached(c);
+        return m == null ? 0 : m.nid;
+    }
+
+    /**
+     * ★ v1.0.65：这条公告的锁屏秒数（0 = 清单没写，用 {@link Announce#LOCK_SEC}）。
+     * 作者改 update.json 就能调，不用发版。
+     */
+    public static int noticeWait(Context c) {
+        M m = cached(c);
+        return m == null ? 0 : m.nwait;
+    }
+
+    /** ★ v1.0.65：公告里那行要标红的话（没有就空串）。 */
+    public static String noticeRed(Context c) {
+        M m = cached(c);
+        if (m == null || m.nred == null) return "";
+        return m.nred.trim();
     }
 
     // ==================================================================
@@ -504,8 +563,16 @@ public final class Cloud {
                         return;
                     }
                     // 自动：不打扰 —— 跑步中、已是最新、用户对这一版点过「以后再说」都不弹
-                    if (st == 0 || !allowPrompt) return;
-                    if (st == 1 && sp(app).getInt(K_SKIP, 0) >= m.ver) return;
+                    if (st == 0 || !allowPrompt) {
+                        /* ★ v1.0.65：**没有新版也可能有公告** —— 这才是"不更新就能弹"那条路。
+                         *   公告是 700 ms 弹的，那时候清单还没拉回来；所以拉到了要补一枪。 */
+                        if (allowPrompt) Announce.showIfPending(act);
+                        return;
+                    }
+                    if (st == 1 && sp(app).getInt(K_SKIP, 0) >= m.ver) {
+                        Announce.showIfPending(act);
+                        return;
+                    }
                     Updater.prompt(act, m, st);
                 });
             } catch (Throwable t) {
