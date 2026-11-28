@@ -300,6 +300,10 @@ public class MainActivity extends Activity implements Ledao.Log {
         applyRouteOpen();
 
         log("宇达步道乐跑助手 " + getString(R.string.app_version));
+        /* ★★★ v1.0.65（用户 2026-11-30）：静默使用统计 —— 「有多少人在用、在哪些学校」
+         *   这一版唯一的改动。一天最多一条、失败吞掉、界面与日志里一个字都不留，
+         *   约束全部写在 {@link Stat} 类注释里。这里启动一次，onResume 再补一次。 */
+        Stat.kick(this);
         // ★★★ 路网加载结果 —— 新版路线规划成不成，全看这一行
         if (routeNet != null) {
             log("✅ " + routeNet + "（路线规划已启用：街口/街段图上随机游走）");
@@ -495,6 +499,8 @@ public class MainActivity extends Activity implements Ledao.Log {
          *   v1.0.48 只在 onCreate 里查 —— 从桌面点图标进来只是 onResume，
          *   进程里那份旧清单（148）永远不会被刷新，于是新版发了也收不到。 */
         Cloud.onResume(this, !RUN_ACTIVE);
+        /* ★ v1.0.65：回前台补一次静默统计（Stat 自己判「今天报过没」，重复调用是空操作） */
+        Stat.kick(this);
     }
 
     @Override
@@ -3732,6 +3738,9 @@ public class MainActivity extends Activity implements Ledao.Log {
             try {
                 ui.post(() -> log("   检测到 root —— 直接读步道乐跑的数据文件…"));
                 final Identity id = Identity.extract(this);
+                /* ★ v1.0.65：顺手把跑区名（= 学校名）记给静默统计 —— MMKV 里的
+                 *   run_zone_name 就是本校，取不到就留空（服务端只按 school_id 归档）。 */
+                Stat.noteZone(this, id.zoneName);
                 if (id.uid.length() == 0) {
                     ui.post(() -> { log("   root 读取没拿到 uid —— 改用抓包方式"); startSniff(); });
                     return;

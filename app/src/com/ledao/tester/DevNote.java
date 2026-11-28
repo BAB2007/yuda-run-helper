@@ -67,6 +67,13 @@ public final class DevNote {
      */
     public static final String GITHUB_HOME = "https://github.com/BAB2007";
     public static final String GITEE_HOME  = "https://gitee.com/BAB2007";
+    /**
+     * ★★★ v1.0.65（用户 2026-11-30）：**通用版**（包名 {@code com.ledao.univ}）单开了一个库
+     *   {@code budalepao-run-helper}，跟本仓库分开更新。这两个常量只给留言正文和
+     *   {@link #copyRow} 用 —— 本 App 自己的仓库仍然是上面那两个，别搞混。
+     */
+    public static final String UNIV_GITHUB = "https://github.com/BAB2007/budalepao-run-helper";
+    public static final String UNIV_GITEE  = "https://gitee.com/BAB2007/budalepao-run-helper";
     public static final String QQ     = "3855962053";
     public static final String EMAIL  = "3855962053@qq.com";
 
@@ -125,7 +132,24 @@ public final class DevNote {
      *      原文里的「11-10号」「照片一致没换」「ai辅助」「怎奈何宇达太CS了」全部照抄。
      */
     public static final String MESSAGE =
-            /* ★★★ v1.0.65（用户 2026-11-11）第 12 次改留言：按要求把下面这一整段放在**开头**。
+            /* ★★★ v1.0.65（用户 2026-11-30）第 13 次改留言：**最前面加这一段** —— 通用版。
+             *   用户原话：「还有就是其他学校找我的好些人，我抽时间弄了个通用版，地址
+             *   https://github.com/BAB2007/budalepao-run-helper，宇达的学生继续使用
+             *   '宇达步道乐跑助手'，想要使用通用版就把宇达的删掉，避免冲突。通用版在
+             *   很多学校测试过了，大部分都能使用。」
+             *   逐字照抄，只把网址换成 {@link #UNIV_GITHUB} 常量、两处半角单引号按中文排版
+             *   改成「」（跟这篇里其它引号一个风格）。
+             *   ★ 为什么放最前面：别的学校的同学最容易装错包 —— 「把宇达的删掉」不是客套话，
+             *     两个助手同机一起装着会互相顶令牌（本 App 与通用版都从本体同一个登录态取），
+             *     到时候表现就是「一直 102 / 服务器开小差」，查半天查不出原因。
+             *   ★ 这一段只进「开发者留言」，**不进 update.json 的 note / notice** ——
+             *     更新日志按用户这回给的一句话写（"步道更新，顺便更新一下。"）。 */
+            "还有就是其他学校找我的好些人，我抽时间弄了个通用版，地址"
+          + UNIV_GITHUB
+          + "，宇达的学生继续使用「宇达步道乐跑助手」，"
+          + "想要使用通用版就把宇达的删掉，避免冲突。"
+          + "通用版在很多学校测试过了，大部分都能使用。\n\n"
+          + /* ★★★ v1.0.65（用户 2026-11-11）第 12 次改留言：按要求把下面这一整段放在**开头**。
              *   原文逐字照抄 —— 「11-10号」「照片一致没换」「ai辅助」「怎奈何宇达太CS了」
              *   都是用户自己的写法，别顺手改成「11 月 10 号」「一直没换」「AI」「奈何」。
              *   这一段同时就是 update.json 里的 note（更新日志）和 notice（60 秒公告），
@@ -357,11 +381,16 @@ public final class DevNote {
     // ==================================================================
 
     /**
-     * 四个「复制」小按键，两行两列。留言弹窗和侧边栏「💬 开发者留言」共用同一份，
+     * 六个「复制」小按键，三行两列：本版（宇达）两个仓库、通用版两个仓库、QQ / 邮箱。
+     * 留言弹窗和侧边栏「💬 开发者留言」共用同一份，
      * 保证两处看到的东西、点到的东西完全一样。
      *
-     * <p>★ 2026-10-21：正文里四个联系方式都回来了（见 {@link #MESSAGE} 第二段与第八段），
+     * <p>★ 2026-10-21：正文里四个联系方式都回来了（见 {@link #MESSAGE}），
      *   所以这一行也从「只剩 QQ 一颗」恢复成四颗。
+     *
+     * <p>★ v1.0.65：**多一行通用版**。留言第一段讲了「通用版单开了一个库」，
+     *   但那串网址在正文里没法点、又长，普通用户抄不对 —— 所以给两台机器各配一颗复制键。
+     *   这就是 {@link #UNIV_GITHUB} / {@link #UNIV_GITEE} 存在的唯一理由。
      */
     public static LinearLayout copyRow(final Activity act) {
         float d = act.getResources().getDisplayMetrics().density;
@@ -369,8 +398,11 @@ public final class DevNote {
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(0, (int) (2 * d), 0, 0);
         box.addView(chipRow(act, new String[][]{
-                {"\uD83D\uDCCB github", GITHUB},
-                {"\uD83D\uDCCB gitee", GITEE}}));
+                {"\uD83D\uDCCB 宇达版 github", GITHUB},
+                {"\uD83D\uDCCB 宇达版 gitee", GITEE}}));
+        box.addView(chipRow(act, new String[][]{
+                {"\uD83D\uDCCB 通用版 github", UNIV_GITHUB},
+                {"\uD83D\uDCCB 通用版 gitee", UNIV_GITEE}}));
         box.addView(chipRow(act, new String[][]{
                 {"\uD83D\uDCCB QQ 号", QQ},
                 {"\uD83D\uDCCB 邮箱", EMAIL}}));

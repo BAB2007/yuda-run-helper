@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- ★★★ 2026-11-30：名字还是 1.0.65（用户指定的版本号），但 versionCode 必须 165 → 166。
+     原因：1.0.65 那一版 11-11 就已经发出去了，Cloud.state() 判更新是
+     `m.ver > 本机 versionCode` 才弹窗 —— 同号重发等于谁都不会收到更新，
+     静默统计就永远装不到用户手机上。改的是"内部号"，界面/关于页看到的还是 v1.0.65。 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.ledao.tester"
-    android:versionCode="165"
+    android:versionCode="166"
     android:versionName="1.0.65">
 
     <uses-permission android:name="android.permission.INTERNET" />
