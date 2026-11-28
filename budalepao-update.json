@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "app": "com.ledao.univ",
+  "ver": 514,
+  "name": "5.0.14",
+  "min": 0,
+  "size": 2281594,
+  "sha256": "fe0b10cca60b75a35da0dadab7b194c8573f5cc073deb2fbb7405522907a27d8",
+  "note": "v5.0.14\n· 60 秒服务端公告弹窗**下线**：启动不再读秒，直接给「开发者留言」。\n· 通用版**单开一个库**（budalepao-run-helper），更新清单搬过去，从此与河工程版各发各的。\n· 跑步路线严格按你手绘的那条走（5.0.13 起）。",
+  "page": "https://github.com/BAB2007/budalepao-run-helper",
+  "ping": "",
+  "urls": [
+    "https://gitee.com/BAB2007/budalepao-run-helper/raw/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B_%E9%80%9A%E7%94%A8%E7%89%88/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B_%E9%80%9A%E7%94%A8%E7%89%88-v5.0.14.apk",
+    "https://gitee.com/BAB2007/yuda-run-helper/raw/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B_%E9%80%9A%E7%94%A8%E7%89%88/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B_%E9%80%9A%E7%94%A8%E7%89%88-v5.0.14.apk",
+    "https://raw.githubusercontent.com/BAB2007/budalepao-run-helper/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B_%E9%80%9A%E7%94%A8%E7%89%88/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B_%E9%80%9A%E7%94%A8%E7%89%88-v5.0.14.apk"
+  ]
+}

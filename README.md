@@ -1,3 +1,15 @@
+> ### 🧭 先确认你该装哪一版
+>
+> **本仓库 = 河工程版**：路线、打卡点、跑区都只对**河北工程大学**有效。
+> **其他任何学校**（或者想自己在地图上画线）请去 **通用版 · 另有仓库**：
+>
+> 👉 **[GitHub · budalepao-run-helper](https://github.com/BAB2007/budalepao-run-helper)** ｜ 👉 **[Gitee · budalepao-run-helper](https://gitee.com/BAB2007/budalepao-run-helper)**
+>
+> 两版**包名不同**（河工程版 `com.ledao.tester` / 通用版 `com.ledao.univ`），可以同时装。
+> 从通用版 `v5.0.14` 起**两个库分开更新**：通用版的更新清单已经搬到它自己的仓库，本仓库的更新只影响河工程版。
+
+---
+
 # 宇达步道乐跑助手
 
 两个版本，按自己的学校挑一个装；**包名不同，可以同时装**，互不覆盖。
@@ -5,7 +17,7 @@
 | | 版本 | 给谁用 | 安装包 |
 |---|---|---|---|
 | A | **河工程版 v1.0.65** | 河北工程大学（方向、打卡点走本校那套） | [下载](https://raw.githubusercontent.com/BAB2007/yuda-run-helper/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B-v1.0.65.apk) |
-| B | **通用版 v5.0.11** | 其他学校 / 想自己画路线 | [下载](https://raw.githubusercontent.com/BAB2007/yuda-run-helper/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B_%E9%80%9A%E7%94%A8%E7%89%88/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B_%E9%80%9A%E7%94%A8%E7%89%88-v5.0.11.apk) |
+| B | **通用版 v5.0.14**（主仓库：<https://github.com/BAB2007/budalepao-run-helper>） | 其他学校 / 想自己画路线 | [下载](https://raw.githubusercontent.com/BAB2007/budalepao-run-helper/main/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B_%E9%80%9A%E7%94%A8%E7%89%88/%E5%AE%87%E8%BE%BE%E6%AD%A5%E9%81%93%E4%B9%90%E8%B7%91%E5%8A%A9%E6%89%8B_%E9%80%9A%E7%94%A8%E7%89%88-v5.0.14.apk)（本仓库里也留了一份同版本的过渡副本，老链接不会失效） |
 
 安卓 7.0 以上直接装。装完**标题栏右侧就是版本号**，对不上就是下到了旧的（`Ctrl+F5` 强刷页面）。
 
@@ -42,10 +54,14 @@ uid、学号、设备号、登录令牌在写入那一刻就已经打码，可�
 
 ```
 宇达步道乐跑助手/             河工程版安装包（v1.0.65，源码在 app/）
-宇达步道乐跑助手_通用版/       通用版安装包（v5.0.11）
+宇达步道乐跑助手_通用版/       通用版安装包（v5.0.14，主仓库在 budalepao-run-helper，这里是过渡副本）
 app/                        河工程版源码（手写构建，不用 Gradle）
 update.json                 软件内更新清单（河工程版用）
+budalepao-update.json       通用版更新清单的 Gitee 过渡镜像（等 Gitee 新库建好后由新库那份接管）
 使用说明.md                  河工程版图文说明
 ```
 
+**两个库各查各的更新清单**：河工程版认本仓库的 `update.json`，通用版认 `budalepao-run-helper` 仓库的 `update.json` —— 一边发版不会把另一边顶掉。
+
 仓库：<https://github.com/BAB2007/yuda-run-helper> · <https://gitee.com/BAB2007/yuda-run-helper>
+通用版仓库：<https://github.com/BAB2007/budalepao-run-helper> · <https://gitee.com/BAB2007/budalepao-run-helper>
